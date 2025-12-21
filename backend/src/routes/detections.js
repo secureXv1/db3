@@ -90,7 +90,7 @@ router.get("/", async (req, res) => {
     // data
     const qData = `
       SELECT
-        id, ts, imsi, imei, lat, lon, distance_m,
+        id, ts, imsi, imei, operator, lat, lon, distance_m,
         source_type, source_file, source_row,
         ${selectDist},
         CASE WHEN geom IS NULL THEN NULL ELSE ST_AsText(geom::geometry) END AS geom_wkt
@@ -99,6 +99,7 @@ router.get("/", async (req, res) => {
       ORDER BY ts DESC
       LIMIT ${l} OFFSET ${offset};
     `;
+
     const dataRes = await pool.query(qData, args);
 
     res.json({

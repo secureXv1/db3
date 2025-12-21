@@ -82,6 +82,7 @@
                 <th>TS</th>
                 <th>IMSI</th>
                 <th>IMEI</th>
+                <th>OPERADOR</th>
                 <th>LAT</th>
                 <th>LON</th>
                 <th>Dist(m)</th>
@@ -93,6 +94,7 @@
                 <td class="mono">{{ fmtTs(r.ts) }}</td>
                 <td class="mono">{{ r.imsi || "-" }}</td>
                 <td class="mono">{{ r.imei || "-" }}</td>
+                <td class="mono">{{ r.operator || "-" }}</td>
                 <td class="mono">{{ r.lat ?? "-" }}</td>
                 <td class="mono">{{ r.lon ?? "-" }}</td>
                 <td class="mono">{{ r.dist_m != null ? Math.round(r.dist_m) : (r.distance_m ?? "-") }}</td>
@@ -105,7 +107,7 @@
 
               </tr>
               <tr v-if="rows.length===0">
-                <td colspan="7" class="empty">Sin resultados</td>
+                <td colspan="8" class="empty">Sin resultados</td>
               </tr>
             </tbody>
           </table>
