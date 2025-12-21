@@ -166,33 +166,27 @@ async function insertBatch({ rows, saveRaw }) {
   for (const r of rows) {
     // geom desde lat/lon en SQL
     values.push(`(
-      $${p++}, $${p++}, $${p++}, $${p++}, $${p++},
-      CASE
-        WHEN $${p}::double precision IS NULL OR $${p + 1}::double precision IS NULL THEN NULL
-        ELSE ST_SetSRID(ST_MakePoint($${p + 1}::double precision, $${p}::double precision), 4326)::geography
+      $${p++},$${p++},$${p++},$${p++},$${p++},$${p++},
+      CASE WHEN $${p}::double precision IS NULL OR $${p + 1}::double precision IS NULL THEN NULL
+          ELSE ST_SetSRID(ST_MakePoint($${p + 1}::double precision,$${p}::double precision),4326)::geography
       END,
-      $${p + 2}, $${p + 3}, $${p + 4}, $${p + 5}
+      $${p + 2},$${p + 3},$${p + 4},$${p + 5}
     )`);
 
     params.push(
-      r.ts,
-      r.imsi,
-      r.imei,
-      r.lat,
-      r.lon,
-      r.lat,
-      r.lon,
+      r.ts, r.imsi, r.imei, r.operator,   // 👈 operator aquí
+      r.lat, r.lon,
+      r.lat, r.lon,                        // para CASE
       r.distance_m,
-      r.source_type,
-      r.source_file,
-      r.source_row
+      r.source_type, r.source_file, r.source_row
     );
+
     p += 6;
   }
 
   const sqlDet = `
     INSERT INTO detections
-      (ts, imsi, imei, lat, lon, geom, distance_m, source_type, source_file, source_row)
+      (ts, imsi, imei, operator, lat, lon, geom, distance_m, source_type, source_file, source_row)
     VALUES ${values.join(",")}
     ON CONFLICT (source_file, source_row, ts) DO NOTHING;
   `;
@@ -263,12 +257,13 @@ async function ingestCsvFile(filepath, originalName, { saveRaw = true, batchSize
     rows_seen++;
     const source_row = rows_seen;
 
-    let ts, imsi, imei, lat, lon, dist;
+    let ts, imsi, imei, lat, lon, dist, operator;
 
     if (source_type === 1) {
       ts = parseTs(pick(row, "dateTime", "datetime", "FECHA", "fecha", "DATE", "date", "Date"));
       imsi = (pick(row, "imsi") || "").trim() || null;
       imei = (pick(row, "imei") || "").trim() || null;
+      operator = (pick(row, "operator", "Operator", "provider", "Provider", "OPERADOR", "operador") || "").trim() || null;
 
       const ue_lat = toFloat(pick(row, "ueLatitude", "uelatitude"));
       const ue_lon = toFloat(pick(row, "ueLongitude", "uelongitude"));
@@ -289,6 +284,7 @@ async function ingestCsvFile(filepath, originalName, { saveRaw = true, batchSize
       ts = parseTs(pick(row, "Time", "time", "FECHA", "fecha", "DATE", "date", "Date"));
       imsi = (pick(row, "IMSI", "imsi") || "").trim() || null;
       imei = (pick(row, "IMEI", "imei") || "").trim() || null;
+      operator = (pick(row, "operator", "Operator", "provider", "Provider", "OPERADOR", "operador") || "").trim() || null;
       lat = toFloat(pick(row, "Latitude", "lat", "LAT"));
       lon = toFloat(pick(row, "Longitude", "lon", "LONG", "LON"));
       dist = toFloat(pick(row, "DISTANCIA", "distancia", "distance")) ?? null;
@@ -304,6 +300,7 @@ async function ingestCsvFile(filepath, originalName, { saveRaw = true, batchSize
       ts,
       imsi,
       imei,
+      operator, // ✅ NUEVO
       lat,
       lon,
       distance_m: dist,
@@ -344,6 +341,256 @@ router.post("/upload", upload.array("files", 20), async (req, res) => {
     const results = [];
     for (const f of files) {
       const r = await ingestCsvFile(f.path, f.originalname, { saveRaw, batchSize: 5000 });
+      results.push(r);
+    }
+
+    res.json({ ok: true, results });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+import sqlite3 from "sqlite3";
+
+// --- helper: promisify sqlite all/get ---
+function sqliteOpenReadOnly(filePath) {
+  return new sqlite3.Database(filePath, sqlite3.OPEN_READONLY);
+}
+function sqliteAll(db, sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
+  });
+}
+function sqliteGet(db, sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)));
+  });
+}
+function sqliteClose(db) {
+  return new Promise((resolve) => db.close(() => resolve()));
+}
+
+const DB3_VIEWS = [
+  "DBViewer_LTE_InterrogationResultsView",
+  "DBViewer_GSM_InterrogationResultsView",
+  "DBViewer_UMTS_InterrogationResultsView",
+];
+
+async function ingestDbFile(filepath, originalName, { saveRaw = true, batchSize = 5000 } = {}) {
+  const source_file = originalName;
+
+  const exists = await pool.query("SELECT 1 FROM ingest_files WHERE source_file=$1", [source_file]);
+  if (exists.rowCount) {
+    return { source_file, skipped: true, reason: "Ya cargado (ingest_files)" };
+  }
+
+  const db = sqliteOpenReadOnly(filepath);
+
+  try {
+    // listar tablas/vistas
+    const rowsTbl = await sqliteAll(
+      db,
+      "SELECT name, type FROM sqlite_master WHERE type IN ('table','view')"
+    );
+    const names = new Set(rowsTbl.map(r => r.name));
+
+    const hasIdcatcher = names.has("idcatcher");
+    const hasDb3Views = DB3_VIEWS.some(v => names.has(v));
+
+    if (!hasIdcatcher && !hasDb3Views) {
+      throw new Error(`No se encontraron tablas soportadas en ${source_file}`);
+    }
+
+    // source_type: 1 para idcatcher, 3 para db3-vistas
+    const source_type = hasDb3Views ? 3 : 1;
+
+    await pool.query(
+      "INSERT INTO ingest_files (source_file, source_type, rows_seen, rows_loaded, notes) VALUES ($1,$2,0,0,$3)",
+      [source_file, source_type, "pending"]
+    );
+
+    let rows_seen = 0;
+    let rows_loaded = 0;
+    const batch = [];
+
+    // ========= CASO .db (idcatcher) =========
+    if (hasIdcatcher) {
+      // contar
+      const c = await sqliteGet(db, "SELECT COUNT(1) AS n FROM idcatcher");
+      const total = Number(c?.n || 0);
+
+      for (let offset = 0; offset < total; offset += batchSize) {
+        const rows = await sqliteAll(
+          db,
+          `
+          SELECT
+            _id as sid,
+            dateTime,
+            imsi,
+            imei,
+            ueLatitude,
+            ueLongitude,
+            gps_latitude,
+            gps_longitude,
+            relative_ue_distance,
+            operator
+          FROM idcatcher
+          ORDER BY _id
+          LIMIT ? OFFSET ?;
+          `,
+          [batchSize, offset]
+        );
+
+        for (const r of rows) {
+          rows_seen++;
+
+          const ts = parseTs(r.dateTime);
+          if (!ts) continue;
+
+          const imsi = (r.imsi || "").trim() || null;
+          const imei = (r.imei || "").trim() || null;
+
+          const ue_lat = toFloat(r.ueLatitude);
+          const ue_lon = toFloat(r.ueLongitude);
+          const gps_lat = toFloat(r.gps_latitude);
+          const gps_lon = toFloat(r.gps_longitude);
+
+          let lat = null, lon = null;
+          if (validLatLon(ue_lat, ue_lon)) { lat = ue_lat; lon = ue_lon; }
+          else if (validLatLon(gps_lat, gps_lon)) { lat = gps_lat; lon = gps_lon; }
+
+          const dist = toFloat(r.relative_ue_distance); // puede ser null
+          const operator = (r.operator || "").trim() || null;
+
+          if (rows_seen === 1 || rows_seen % 10000 === 0) {
+            await ensurePartition(ts);
+          }
+
+          batch.push({
+            ts,
+            imsi,
+            imei,
+            operator,          // ✅ de idcatcher.operator
+            lat,
+            lon,
+            distance_m: dist,  // ✅ relative_ue_distance (puede ser null)
+            source_type: 1,    // ✅ IMPORTANTE: idcatcher es tipo 1
+            source_file,
+            source_row: r.sid ?? rows_seen,  // ✅ usa _id
+            raw: saveRaw ? r : null,
+          });
+
+
+
+          if (batch.length >= batchSize) {
+            await insertBatch({ rows: batch, saveRaw });
+            rows_loaded += batch.length;
+            batch.length = 0;
+          }
+        }
+      }
+    }
+
+    // ========= CASO .db3 (3 vistas DBView_*) =========
+    for (const view of DB3_VIEWS) {
+      if (!names.has(view)) continue;
+
+      let viewRow = 0;
+
+      const rows = await sqliteAll(db, `
+        SELECT
+          Time,
+          IMSI,
+          IMEI,
+          Latitude,
+          Longitude,
+          "Estimated Range (m)" AS est_range_m,
+          provider
+        FROM "${view}";
+      `);
+
+      for (const r of rows) {
+        viewRow++;
+
+        rows_seen++;
+
+        const ts =
+          parseTs(r.Time) ||
+          parseTs(r.Timestamp) ||
+          parseTs(r["Time (UTC)"]) ||
+          (Number.isFinite(Number(r.Time))
+            ? new Date(Number(r.Time) * 1000)
+            : null);
+
+        if (!ts) continue;
+
+
+        const imsi = (r.IMSI || "").trim() || null;
+        const imei = (r.IMEI || "").trim() || null;
+
+        const lat = toFloat(r.Latitude);
+        const lon = toFloat(r.Longitude);
+
+        // ⚠️ solo descarta si AMBOS son null
+        if (lat == null || lon == null) continue;
+
+        const dist = toFloat(r.est_range_m);
+        const operator = (r.provider || "").trim() || null;
+
+        if (rows_seen === 1 || rows_seen % 10000 === 0) {
+          await ensurePartition(ts);
+        }
+
+        batch.push({
+          ts,
+          imsi,
+          imei,
+          operator: (r.provider || "").trim() || null,
+          lat,
+          lon,
+          distance_m: toFloat(r.est_range_m),
+          source_type: 3,
+          source_file,                 // ✅ FALTABA
+          source_row: `${view}:${viewRow}`,
+          raw: saveRaw ? { ...r, _view: view } : null,
+        });
+
+        if (batch.length >= batchSize) {
+          await insertBatch({ rows: batch, saveRaw });
+          rows_loaded += batch.length;
+          batch.length = 0;
+        }
+      }
+    }
+
+    // 🔥 FLUSH FINAL (MUY IMPORTANTE)
+    if (batch.length) {
+      await insertBatch({ rows: batch, saveRaw });
+      rows_loaded += batch.length;
+      batch.length = 0;
+    }
+
+    await pool.query(
+      "UPDATE ingest_files SET rows_seen=$1, rows_loaded=$2, loaded_at=now(), notes=$3 WHERE source_file=$4",
+      [rows_seen, rows_loaded, "ok", source_file]
+    );
+
+    return { source_file, source_type, rows_seen, rows_loaded, skipped: false };
+  } finally {
+    await sqliteClose(db);
+  }
+}
+
+// ✅ Nuevo endpoint: subir DB/DB3
+router.post("/upload-db", upload.array("files", 10), async (req, res) => {
+  const saveRaw = String(req.query.saveRaw ?? "1") === "1";
+  try {
+    const files = req.files || [];
+    if (!files.length) return res.status(400).json({ ok: false, error: "No llegaron archivos" });
+
+    const results = [];
+    for (const f of files) {
+      const r = await ingestDbFile(f.path, f.originalname, { saveRaw, batchSize: 5000 });
       results.push(r);
     }
 

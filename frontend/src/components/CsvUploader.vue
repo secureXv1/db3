@@ -1,11 +1,20 @@
 <template>
   <div class="uploader">
     <div class="row">
-      <input ref="fileInput" type="file" accept=".csv,text/csv" multiple @change="onPick" />
+      <input
+        ref="fileInput"
+        type="file"
+        accept=".csv,.db,.db3,application/vnd.sqlite3,application/x-sqlite3"
+        multiple
+        @change="onPick"
+      />
+
       <button @click="upload" :disabled="!files.length || uploading">
-        {{ uploading ? "Cargando..." : "Subir CSV" }}
+        {{ uploading ? "Cargando..." : buttonLabel }}
       </button>
+
       <button class="ghost" @click="clear" :disabled="uploading">Limpiar</button>
+
       <label class="chk">
         <input type="checkbox" v-model="saveRaw" :disabled="uploading" />
         Guardar RAW (jsonb)
@@ -13,7 +22,8 @@
     </div>
 
     <div class="small" v-if="files.length">
-      {{ files.length }} archivo(s) seleccionados
+      {{ files.length }} archivo(s) seleccionados —
+      CSV: {{ csvFiles.length }} | DB/DB3: {{ dbFiles.length }}
     </div>
 
     <div class="bar" v-if="uploading">
@@ -29,7 +39,7 @@
 </template>
 
 <script setup>
-import { ref } from "vue";
+import { computed, ref } from "vue";
 
 const API = import.meta.env.VITE_API_BASE;
 
@@ -41,10 +51,25 @@ const result = ref("");
 const error = ref("");
 const saveRaw = ref(true);
 
+function isDbFile(name) {
+  return /\.(db|db3)$/i.test(name || "");
+}
+
+const csvFiles = computed(() => files.value.filter(f => !isDbFile(f.name)));
+const dbFiles  = computed(() => files.value.filter(f =>  isDbFile(f.name)));
+
+const buttonLabel = computed(() => {
+  if (!files.value.length) return "Subir";
+  if (dbFiles.value.length && !csvFiles.value.length) return "Subir DB/DB3";
+  if (csvFiles.value.length && !dbFiles.value.length) return "Subir CSV";
+  return "Subir CSV + DB/DB3";
+});
+
 function onPick(e) {
   files.value = Array.from(e.target.files || []);
   result.value = "";
   error.value = "";
+  progress.value = 0;
 }
 
 function clear() {
@@ -53,6 +78,30 @@ function clear() {
   error.value = "";
   progress.value = 0;
   if (fileInput.value) fileInput.value.value = "";
+}
+
+function xhrUpload(url, fd, onProg) {
+  const xhr = new XMLHttpRequest();
+
+  const p = new Promise((resolve, reject) => {
+    xhr.upload.onprogress = (evt) => {
+      if (evt.lengthComputable && onProg) onProg(evt.loaded, evt.total);
+    };
+    xhr.onload = () => {
+      try {
+        const j = JSON.parse(xhr.responseText || "{}");
+        if (!j.ok) reject(new Error(j.error || "Error al cargar"));
+        else resolve(j);
+      } catch (e) {
+        reject(e);
+      }
+    };
+    xhr.onerror = () => reject(new Error("Error de red"));
+  });
+
+  xhr.open("POST", url);
+  xhr.send(fd);
+  return p;
 }
 
 async function upload() {
@@ -64,41 +113,49 @@ async function upload() {
   error.value = "";
 
   try {
-    const fd = new FormData();
-    for (const f of files.value) fd.append("files", f);
+    const results = [];
 
-    // XMLHttpRequest para progreso real
-    const xhr = new XMLHttpRequest();
-    const url = `${API}/api/ingest/upload?saveRaw=${saveRaw.value ? "1" : "0"}`;
+    // Progreso global simple: 0-50% CSV, 50-100% DB
+    recognizedExtensionsGuard();
 
-    const p = new Promise((resolve, reject) => {
-      xhr.upload.onprogress = (evt) => {
-        if (evt.lengthComputable) {
-          progress.value = Math.round((evt.loaded / evt.total) * 100);
-        }
-      };
-      xhr.onload = () => {
-        try {
-          const j = JSON.parse(xhr.responseText || "{}");
-          if (!j.ok) reject(new Error(j.error || "Error al cargar"));
-          else resolve(j);
-        } catch (e) {
-          reject(e);
-        }
-      };
-      xhr.onerror = () => reject(new Error("Error de red"));
-    });
+    if (csvFiles.value.length) {
+      const fdCsv = new FormData();
+      csvFiles.value.forEach(f => fdCsv.append("files", f));
 
-    xhr.open("POST", url);
-    xhr.send(fd);
+      const urlCsv = `${API}/api/ingest/upload?saveRaw=${saveRaw.value ? "1" : "0"}`;
+      const jCsv = await xhrUpload(urlCsv, fdCsv, (loaded, total) => {
+        progress.value = Math.round((loaded / total) * 50);
+      });
 
-    const j = await p;
-    result.value = JSON.stringify(j, null, 2);
+      results.push({ kind: "csv", ...jCsv });
+    }
+
+    if (dbFiles.value.length) {
+      const fdDb = new FormData();
+      dbFiles.value.forEach(f => fdDb.append("files", f));
+
+      const urlDb = `${API}/api/ingest/upload-db?saveRaw=${saveRaw.value ? "1" : "0"}`;
+      const jDb = await xhrUpload(urlDb, fdDb, (loaded, total) => {
+        progress.value = 50 + Math.round((loaded / total) * 50);
+      });
+
+      results.push({ kind: "db", ...jDb });
+    }
+
     progress.value = 100;
+    result.value = JSON.stringify({ ok: true, uploads: results }, null, 2);
   } catch (e) {
     error.value = String(e.message || e);
   } finally {
     uploading.value = false;
+  }
+}
+
+// Si el usuario mete algo raro, lo avisamos (evita confusiones)
+function recognizedExtensionsGuard() {
+  const bad = files.value.filter(f => !/\.(csv|db|db3)$/i.test(f.name || ""));
+  if (bad.length) {
+    throw new Error(`Archivos no soportados: ${bad.map(x => x.name).join(", ")} (solo .csv, .db, .db3)`);
   }
 }
 </script>
