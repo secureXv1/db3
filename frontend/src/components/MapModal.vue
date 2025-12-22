@@ -9,8 +9,8 @@
         <button class="ghost" @click="close">Cerrar ✕</button>
       </div>
 
-      <!-- MAPA -->
-      <div ref="mapEl" class="map" style="height:520px"></div>
+      <!-- MAPA: ocupa espacio real -->
+      <div ref="mapEl" class="map"></div>
 
       <!-- TABLA ABAJO -->
       <div class="tableWrap" v-if="open && normalized.length">
@@ -20,6 +20,7 @@
               <th>Fecha</th>
               <th>IMSI</th>
               <th>IMEI</th>
+              <th>Operador</th>
               <th>Lat</th>
               <th>Lon</th>
               <th>Dist (m)</th>
@@ -33,11 +34,12 @@
               @mouseleave="clearHighlight()"
             >
               <td>{{ r.ts ? new Date(r.ts).toLocaleString() : "-" }}</td>
-              <td>{{ r.imsi || "-" }}</td>
-              <td>{{ r.imei || "-" }}</td>
-              <td>{{ r._lat }}</td>
-              <td>{{ r._lon }}</td>
-              <td>{{ r._dist != null ? r._dist : "-" }}</td>
+              <td class="mono">{{ r.imsi || "-" }}</td>
+              <td class="mono">{{ r.imei || "-" }}</td>
+              <td class="mono">{{ r.operator || "-" }}</td>
+              <td class="mono">{{ r._lat }}</td>
+              <td class="mono">{{ r._lon }}</td>
+              <td class="mono">{{ r._dist != null ? r._dist : "-" }}</td>
             </tr>
           </tbody>
         </table>
@@ -57,7 +59,7 @@ import L from "leaflet";
 const props = defineProps({
   open: { type: Boolean, default: false },
   points: { type: Array, default: () => [] },
-  defaultRadius: { type: Number, default: 1000 },
+  defaultRadius: { type: Number, default: 1000 }, // (lo dejamos por si luego lo quieres usar)
   maxPoints: { type: Number, default: 1500 },
   subtitle: { type: String, default: "" },
 });
@@ -72,15 +74,10 @@ let markersLayer = null;
 let circlesLayer = null;
 let ro = null;
 
-const localDefaultRadius = ref(props.defaultRadius);
 const localMaxPoints = ref(props.maxPoints);
-
-watch(() => props.defaultRadius, (v) => (localDefaultRadius.value = v));
 watch(() => props.maxPoints, (v) => (localMaxPoints.value = v));
 
-function close() {
-  emit("close");
-}
+function close() { emit("close"); }
 
 function toNum(v) {
   if (v == null) return null;
@@ -110,43 +107,45 @@ const normalized = computed(() => {
   return out.slice(0, Math.max(1, localMaxPoints.value));
 });
 
-const totalWithLatLon = computed(() => (props.points || []).filter((p) => p.lat != null && p.lon != null).length);
 const validCount = computed(() => normalized.value.length);
 
 // ====== estilos círculo ======
 const circleStyle = {
-  color: "#2563eb",
+  color: "#60a5fa",
   weight: 2,
   opacity: 0.9,
-  fillColor: "#3b82f6",
-  fillOpacity: 0.16, // 👈 más transparente
+  fillColor: "#22d3ee",
+  fillOpacity: 0.12, // ✅ transparente
 };
 const circleStyleHover = {
-  color: "#1d4ed8",
+  color: "#93c5fd",
   weight: 3,
   opacity: 1,
-  fillColor: "#2563eb",
-  fillOpacity: 0.26,
+  fillColor: "#60a5fa",
+  fillOpacity: 0.20,
 };
 
-// “punto” real (dot) con divIcon
+// “punto” real con divIcon (dot)
 function makeDotIcon(active = false) {
   const size = active ? 12 : 8;
   const anchor = active ? 6 : 4;
+  const ring = active ? 3 : 2;
+  const glow = active ? 18 : 12;
+
   return L.divIcon({
     className: "",
     html: `<div style="
       width:${size}px;height:${size}px;border-radius:999px;
-      background:#111827;
-      border:2px solid #ffffff;
-      box-shadow:0 2px ${active ? 14 : 10}px rgba(0,0,0,.35);
+      background:#e5e7eb;
+      border:${ring}px solid rgba(34,211,238,.95);
+      box-shadow:0 0 ${glow}px rgba(34,211,238,.45), 0 8px 26px rgba(0,0,0,.35);
     "></div>`,
     iconSize: [size, size],
     iconAnchor: [anchor, anchor],
   });
 }
 
-// referencias para hover
+// referencias hover
 let markerByKey = new Map();
 let circleByKey = new Map();
 let hoveredKey = null;
@@ -168,17 +167,17 @@ function destroyMap() {
 function initMap() {
   if (!mapEl.value) return;
 
-  map = L.map(mapEl.value, { zoomControl: true });
+  map = L.map(mapEl.value, {
+    zoomControl: true,
+    preferCanvas: true,
+  });
 
   const tiles = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
     attribution: "© OpenStreetMap",
   });
 
-  tiles.on("tileerror", (e) => {
-    console.error("[Leaflet tileerror]", e);
-  });
-
+  tiles.on("tileerror", (e) => console.error("[Leaflet tileerror]", e));
   tiles.addTo(map);
 
   markersLayer = L.layerGroup().addTo(map);
@@ -187,9 +186,7 @@ function initMap() {
   map.setView([4.60971, -74.08175], 11);
 
   if (modalEl.value && "ResizeObserver" in window) {
-    ro = new ResizeObserver(() => {
-      if (map) map.invalidateSize(true);
-    });
+    ro = new ResizeObserver(() => map?.invalidateSize(true));
     ro.observe(modalEl.value);
   }
 }
@@ -218,31 +215,28 @@ function draw() {
   for (const r of pts) {
     const lat = r._lat;
     const lon = r._lon;
-
     const key = rowKey(r);
+
     bounds.push([lat, lon]);
 
-    // punto (dot)
-    const mk = L.marker([lat, lon], { icon: makeDotIcon(false), keyboard: false }).addTo(markersLayer);
+    // punto
+    const mk = L.marker([lat, lon], { icon: makeDotIcon(false), keyboard: false })
+      .addTo(markersLayer);
 
-    // ✅ SOLO dibuja círculo si la distancia existe (no usar default aquí)
-    const radius = r._dist; // puede ser null
+    // ✅ SOLO círculo si dist existe
+    const radius = r._dist;
     let cir = null;
 
     if (radius != null && Number(radius) > 0) {
       cir = L.circle([lat, lon], { radius: Number(radius), ...circleStyle }).addTo(circlesLayer);
     }
 
-
     markerByKey.set(key, { mk, lat, lon });
     if (cir) circleByKey.set(key, cir);
   }
 
-  if (bounds.length === 1) {
-    map.setView(bounds[0], 16);
-  } else {
-    map.fitBounds(bounds, { padding: [20, 20] });
-  }
+  if (bounds.length === 1) map.setView(bounds[0], 16);
+  else map.fitBounds(bounds, { padding: [24, 24] });
 }
 
 // Hover desde tabla
@@ -250,7 +244,6 @@ function highlightRow(r) {
   if (!map) return;
   const key = rowKey(r);
 
-  // limpiar anterior
   if (hoveredKey && hoveredKey !== key) {
     const prev = markerByKey.get(hoveredKey);
     if (prev) prev.mk.setIcon(makeDotIcon(false));
@@ -263,7 +256,6 @@ function highlightRow(r) {
   const cur = markerByKey.get(key);
   if (cur) {
     cur.mk.setIcon(makeDotIcon(true));
-    // opcional: centrar suave
     map.panTo([cur.lat, cur.lon], { animate: true });
   }
 
@@ -290,21 +282,26 @@ watch(
     }
 
     await nextTick();
-    await new Promise((r) => setTimeout(r, 150));
+    // esperamos layout real
+    await new Promise((r) => setTimeout(r, 120));
 
     destroyMap();
     initMap();
 
+    // doble frame para que Leaflet calcule tamaños
     await new Promise(requestAnimationFrame);
     await new Promise(requestAnimationFrame);
 
     map?.invalidateSize(true);
     draw();
+
+    // un invalidate extra (modales + blur)
+    setTimeout(() => { map?.invalidateSize(true); }, 150);
   },
   { immediate: true }
 );
 
-watch([normalized, localDefaultRadius, localMaxPoints], () => {
+watch(normalized, () => {
   if (props.open && map) {
     map.invalidateSize(true);
     draw();
@@ -315,76 +312,132 @@ onBeforeUnmount(() => destroyMap());
 </script>
 
 <style scoped>
-.backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,.45);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+/* theme glass similar al portal */
+.backdrop{
+  position:fixed; inset:0;
+  background: rgba(0,0,0,.55);
+  display:flex; align-items:center; justify-content:center;
   padding: 14px;
   z-index: 9999;
 }
-.modal {
-  width: min(1100px, 96vw);
-  height: min(820px, 92vh); /* un poco más alto para tabla */
-  background: #fff;
-  border-radius: 14px;
-  box-shadow: 0 18px 60px rgba(0,0,0,.35);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
+
+.modal{
+  width: min(1180px, 96vw);
+  height: min(860px, 92vh);
+  border-radius: 18px;
+  overflow:hidden;
+
+  background: rgba(12, 18, 30, 0.68);
+  border: 1px solid rgba(255,255,255,0.14);
+  box-shadow: 0 22px 70px rgba(0,0,0,.55);
+  backdrop-filter: blur(14px);
+
+  display:flex;
+  flex-direction:column;
 }
-.head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+
+/* top line glow */
+.modal::before{
+  content:"";
+  position:absolute;
+  left: 14px;
+  right: 14px;
+  top: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(34,211,238,.85), rgba(96,165,250,.8), transparent);
+  opacity: .9;
+}
+
+.head{
+  position: relative;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
   padding: 12px 14px;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid rgba(255,255,255,0.10);
+  color: rgba(255,255,255,.92);
 }
-.title { font-weight: 800; font-size: 16px; }
-.sub { font-size: 12px; color: #666; margin-top: 2px; }
 
-button {
-  border: 1px solid #111;
-  background: #111;
-  color: #fff;
-  border-radius: 10px;
+.title{ font-weight: 900; font-size: 16px; }
+.sub{ font-size: 12px; color: rgba(255,255,255,.68); margin-top: 2px; }
+
+button{
+  border: 1px solid rgba(255,255,255,0.16);
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,.92);
+  border-radius: 12px;
   padding: 8px 12px;
-  cursor: pointer;
+  cursor:pointer;
 }
-button.ghost { background: transparent; color: #111; }
+button.ghost:hover{ background: rgba(255,255,255,0.12); }
 
-.map {
+/* ✅ el mapa ocupa el “flex” disponible */
+.map{
+  flex: 1;
   width: 100%;
+  min-height: 420px;
 }
 
-/* TABLA */
+/* tabla inferior */
 .tableWrap{
-  border-top: 1px solid #eee;
-  background: #fff;
-  max-height: 240px;
-  overflow: auto;
+  border-top: 1px solid rgba(255,255,255,0.10);
+  background: rgba(10, 14, 24, 0.55);
+  max-height: 260px;
+  overflow:auto;
 }
+
 .miniTable{
-  width: 100%;
+  width:100%;
   border-collapse: collapse;
   font-size: 12px;
-}
-.miniTable th, .miniTable td{
-  padding: 8px 10px;
-  border-bottom: 1px solid #f0f0f0;
-  white-space: nowrap;
-}
-.miniTable tbody tr:hover{
-  background: #f5f7ff;
+  color: rgba(255,255,255,.88);
 }
 
-.warn {
+.miniTable th, .miniTable td{
+  padding: 9px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  white-space: nowrap;
+}
+
+.miniTable thead th{
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgba(10, 14, 24, 0.85);
+  color: rgba(255,255,255,.80);
+  font-weight: 800;
+  letter-spacing: .2px;
+}
+
+.miniTable tbody tr:hover{
+  background: rgba(34,211,238,.10);
+}
+
+.mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+.warn{
   padding: 10px 14px;
   font-size: 12px;
-  background: #fff7e6;
-  border-top: 1px solid #eee;
-  color: #6b4e00;
+  background: rgba(251, 191, 36, 0.12);
+  border-top: 1px solid rgba(255,255,255,0.10);
+  color: rgba(255,255,255,.86);
+}
+
+/* Leaflet: quita el borde blanco y mejora controles en dark */
+:global(.leaflet-container){
+  background: #0b1020;
+}
+:global(.leaflet-control-zoom a){
+  background: rgba(10,14,24,.85) !important;
+  color: rgba(255,255,255,.9) !important;
+  border: 1px solid rgba(255,255,255,.14) !important;
+}
+:global(.leaflet-control-attribution){
+  background: rgba(10,14,24,.65) !important;
+  color: rgba(255,255,255,.72) !important;
+  border-radius: 10px !important;
+  border: 1px solid rgba(255,255,255,.10) !important;
+  margin: 8px !important;
+  padding: 4px 8px !important;
 }
 </style>
