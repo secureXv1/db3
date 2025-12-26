@@ -146,11 +146,10 @@
         <div class="error" v-if="error">{{ error }}</div>
       </div>
 
-      <MapModal
+      <ArcgisMapModal
         v-if="showMap"
         :open="showMap"
         :points="rows"
-        :defaultRadius="1000"
         :maxPoints="1500"
         :subtitle="hasImsiOrImei ? `Filtro: ${filters.imsi ? 'IMSI ' + filters.imsi : ''}${filters.imei ? ' IMEI ' + filters.imei : ''}` : ''"
         @close="closeMap"
@@ -162,7 +161,7 @@
 <script setup>
 import { reactive, ref, computed } from "vue";
 import CsvUploader from "./components/CsvUploader.vue";
-import MapModal from "./components/MapModal.vue";
+import ArcgisMapModal from "./components/ArcgisMapModal.vue";
 import LoginCard from "./components/LoginCard.vue";
 
 const API = import.meta.env.VITE_API_BASE;
