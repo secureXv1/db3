@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import detectionsRouter from "./routes/detections.js";
 import ingestRouter from "./routes/ingest.js";
 import authRoutes from "./routes/auth.js";
+import telcoRouter from "./routes/telco.js";
 
 dotenv.config();
 
@@ -15,6 +16,7 @@ app.get("/", (_req, res) => res.json({ ok: true, name: "geo-backend" }));
 app.use("/api/detections", detectionsRouter);
 app.use("/api/ingest", ingestRouter);
 app.use("/api/auth", authRoutes);
+app.use("/api/telco", telcoRouter);
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => {

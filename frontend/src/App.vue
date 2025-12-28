@@ -23,148 +23,171 @@
         <div class="sub">Consultas por fecha, IMSI/IMEI</div>
       </header>
 
-      <CsvUploader />
-
-      <section class="panel">
-        <div class="grid">
-          <div class="field">
-            <label>Desde</label>
-            <input v-model="filters.from" type="datetime-local" />
-          </div>
-
-          <div class="field">
-            <label>Hasta</label>
-            <input v-model="filters.to" type="datetime-local" />
-          </div>
-
-          <div class="field">
-            <label>IMSI</label>
-            <input v-model.trim="filters.imsi" placeholder="732..." />
-          </div>
-
-          <div class="field">
-            <label>IMEI</label>
-            <input v-model.trim="filters.imei" placeholder="35..." />
-          </div>
-        </div>
-
-        <div class="actions">
-          <button class="primary" @click="loadSummaryAndData" :disabled="loading">
-            {{ loading ? "Cargando..." : "Buscar" }}
-          </button>
-
-          <button class="ghost" @click="clearAll" :disabled="loading">Limpiar</button>
-
-          <div class="hint">Tip: si filtras IMSI/IMEI verás “Ver mapa” en la tabla.</div>
-        </div>
-
-        <div class="kpis" v-if="summary">
-          <div class="kpi">
-            <div class="kpi-label">Total</div>
-            <div class="kpi-value">{{ summary.total }}</div>
-          </div>
-
-          <div class="kpi">
-            <div class="kpi-label">IMSI únicos</div>
-            <div class="kpi-value">{{ summary.imsi_unicos }}</div>
-          </div>
-
-          <div class="kpi">
-            <div class="kpi-label">IMEI únicos</div>
-            <div class="kpi-value">{{ summary.imei_unicos }}</div>
-          </div>
-
-          <div class="kpi">
-            <div class="kpi-label">Rango</div>
-            <div class="kpi-value small">
-              <div>{{ summary.min_ts || "-" }}</div>
-              <div>{{ summary.max_ts || "-" }}</div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <div class="tableCard">
-        <div class="tableTop">
-          <div class="titleRow">
-            <h2>Resultados</h2>
-            <div class="muted">{{ total }} total</div>
-          </div>
-
-          <div class="pager">
-            <button class="ghost" @click="prevPage" :disabled="loading || page<=1">←</button>
-            <div>Página <b>{{ page }}</b></div>
-            <button class="ghost" @click="nextPage" :disabled="loading || page>=maxPage">→</button>
-          </div>
-        </div>
-
-        <div class="tableWrap">
-          <table>
-            <thead>
-              <tr>
-                <th>TS</th>
-                <th>IMSI</th>
-                <th>IMEI</th>
-                <th>OPERADOR</th>
-                <th>LAT</th>
-                <th>LON</th>
-                <th>Dist(m)</th>
-                <th>Acciones</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              <tr v-for="r in rows" :key="r.id + '-' + r.ts">
-                <td class="mono">{{ fmtTs(r.ts) }}</td>
-                <td class="mono">{{ r.imsi || "-" }}</td>
-                <td class="mono">{{ r.imei || "-" }}</td>
-                <td class="mono">{{ r.operator || "-" }}</td>
-                <td class="mono">{{ r.lat ?? "-" }}</td>
-                <td class="mono">{{ r.lon ?? "-" }}</td>
-                <td class="mono">{{ r.dist_m != null ? Math.round(r.dist_m) : (r.distance_m ?? "-") }}</td>
-
-                <!-- ✅ botón dentro de TD (HTML correcto) -->
-                <td>
-                  <button
-                    v-if="hasImsiOrImei && rows.length"
-                    class="ghost smallBtn"
-                    @click="openMap"
-                    :disabled="loading"
-                  >
-                    Ver mapa
-                  </button>
-                </td>
-              </tr>
-
-              <tr v-if="rows.length===0">
-                <td colspan="8" class="empty">Sin resultados</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="error" v-if="error">{{ error }}</div>
+      <!-- Tabs -->
+      <div class="tabs">
+        <button class="ghost" :class="{ active: activeTab==='imsi' }" @click="activeTab='imsi'">
+          IMSI/IMEI
+        </button>
+        <button class="ghost" :class="{ active: activeTab==='telco' }" @click="activeTab='telco'">
+          TELCO XDR
+        </button>
       </div>
 
-      <ArcgisMapModal
-        v-if="showMap"
-        :open="showMap"
-        :points="rows"
-        :maxPoints="1500"
-        :subtitle="hasImsiOrImei ? `Filtro: ${filters.imsi ? 'IMSI ' + filters.imsi : ''}${filters.imei ? ' IMEI ' + filters.imei : ''}` : ''"
-        @close="closeMap"
-      />
+      <!-- ====== MODULO ACTUAL (IMSI/IMEI) ====== -->
+      <div v-if="activeTab === 'imsi'">
+
+        <CsvUploader />
+
+        <section class="panel">
+          <div class="grid">
+            <div class="field">
+              <label>Desde</label>
+              <input v-model="filters.from" type="datetime-local" />
+            </div>
+
+            <div class="field">
+              <label>Hasta</label>
+              <input v-model="filters.to" type="datetime-local" />
+            </div>
+
+            <div class="field">
+              <label>IMSI</label>
+              <input v-model.trim="filters.imsi" placeholder="732..." />
+            </div>
+
+            <div class="field">
+              <label>IMEI</label>
+              <input v-model.trim="filters.imei" placeholder="35..." />
+            </div>
+          </div>
+
+          <div class="actions">
+            <button class="primary" @click="loadSummaryAndData" :disabled="loading">
+              {{ loading ? "Cargando..." : "Buscar" }}
+            </button>
+
+            <button class="ghost" @click="clearAll" :disabled="loading">Limpiar</button>
+
+            <div class="hint">Tip: si filtras IMSI/IMEI verás “Ver mapa” en la tabla.</div>
+          </div>
+
+          <div class="kpis" v-if="summary">
+            <div class="kpi">
+              <div class="kpi-label">Total</div>
+              <div class="kpi-value">{{ summary.total }}</div>
+            </div>
+
+            <div class="kpi">
+              <div class="kpi-label">IMSI únicos</div>
+              <div class="kpi-value">{{ summary.imsi_unicos }}</div>
+            </div>
+
+            <div class="kpi">
+              <div class="kpi-label">IMEI únicos</div>
+              <div class="kpi-value">{{ summary.imei_unicos }}</div>
+            </div>
+
+            <div class="kpi">
+              <div class="kpi-label">Rango</div>
+              <div class="kpi-value small">
+                <div>{{ summary.min_ts || "-" }}</div>
+                <div>{{ summary.max_ts || "-" }}</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div class="tableCard">
+          <div class="tableTop">
+            <div class="titleRow">
+              <h2>Resultados</h2>
+              <div class="muted">{{ total }} total</div>
+            </div>
+
+            <div class="pager">
+              <button class="ghost" @click="prevPage" :disabled="loading || page<=1">←</button>
+              <div>Página <b>{{ page }}</b></div>
+              <button class="ghost" @click="nextPage" :disabled="loading || page>=maxPage">→</button>
+            </div>
+          </div>
+
+          <div class="tableWrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>TS</th>
+                  <th>IMSI</th>
+                  <th>IMEI</th>
+                  <th>OPERADOR</th>
+                  <th>LAT</th>
+                  <th>LON</th>
+                  <th>Dist(m)</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                <tr v-for="r in rows" :key="r.id + '-' + r.ts">
+                  <td class="mono">{{ fmtTs(r.ts) }}</td>
+                  <td class="mono">{{ r.imsi || "-" }}</td>
+                  <td class="mono">{{ r.imei || "-" }}</td>
+                  <td class="mono">{{ r.operator || "-" }}</td>
+                  <td class="mono">{{ r.lat ?? "-" }}</td>
+                  <td class="mono">{{ r.lon ?? "-" }}</td>
+                  <td class="mono">{{ r.dist_m != null ? Math.round(r.dist_m) : (r.distance_m ?? "-") }}</td>
+
+                  <td>
+                    <button
+                      v-if="hasImsiOrImei && rows.length"
+                      class="ghost smallBtn"
+                      @click="openMap"
+                      :disabled="loading"
+                    >
+                      Ver mapa
+                    </button>
+                  </td>
+                </tr>
+
+                <tr v-if="rows.length===0">
+                  <td colspan="8" class="empty">Sin resultados</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="error" v-if="error">{{ error }}</div>
+        </div>
+
+        <ArcgisMapModal
+          v-if="showMap"
+          :open="showMap"
+          :points="rows"
+          :maxPoints="1500"
+          :subtitle="hasImsiOrImei ? `Filtro: ${filters.imsi ? 'IMSI ' + filters.imsi : ''}${filters.imei ? ' IMEI ' + filters.imei : ''}` : ''"
+          @close="closeMap"
+        />
+      </div>
+
+      <!-- ====== MODULO NUEVO (TELCO) ====== -->
+      <div v-else>
+        <TelcoModule />
+      </div>
+
     </main>
   </div>
 </template>
+
 
 <script setup>
 import { reactive, ref, computed } from "vue";
 import CsvUploader from "./components/CsvUploader.vue";
 import ArcgisMapModal from "./components/ArcgisMapModal.vue";
 import LoginCard from "./components/LoginCard.vue";
+import TelcoModule from "./components/telco/TelcoModule.vue";
 
 const API = import.meta.env.VITE_API_BASE;
+
+const activeTab = ref("imsi"); // "imsi" | "telco"
 
 const filters = reactive({
   from: "",
@@ -672,6 +695,21 @@ tbody tr:hover{
   .kpis{ grid-template-columns: repeat(2, minmax(0,1fr)); }
   .hint{ margin-left: 0; width: 100%; }
 }
+
+.tabs{
+  margin: 10px 0 12px;
+  display:flex;
+  gap:10px;
+  flex-wrap: wrap;
+}
+.tabs .active{
+  border-color: rgba(34,211,238,.55);
+  box-shadow: 0 0 0 4px rgba(34,211,238,.10);
+  background: rgba(255,255,255,.10);
+  font-weight: 900;
+}
+
+
 </style>
 
 
