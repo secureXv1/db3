@@ -85,7 +85,7 @@ function parseDtSheetAsBlock(sheet) {
 }
 
 export function readXdrExcel(filePath, { fallbackDirection = "IN" } = {}) {
-  const wb = XLSX.readFile(filePath, { cellDates: false });
+  const wb = XLSX.readFile(filePath, { cellDates: true });
 
   const allRecords = [];
   let techByPhone = new Map();
@@ -101,7 +101,7 @@ export function readXdrExcel(filePath, { fallbackDirection = "IN" } = {}) {
     }
 
     // 2) convierte a matriz para detectar header real (saltando biográfico)
-    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false });
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: true });
     if (!rows?.length) continue;
 
     const headerRowIdx = scanForHeader(rows);
