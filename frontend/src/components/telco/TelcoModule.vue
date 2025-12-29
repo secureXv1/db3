@@ -4,7 +4,7 @@
       <div>
         <h2 class="h2">Análisis Telco (XDR)</h2>
         <div class="muted">
-          1) Crear run → 2) Subir Excel → 3) Detectar objetivo principal
+          1) Crear Analisis → 2) Subir Excel → 3) Generar analisis
         </div>
       </div>
 
@@ -17,16 +17,13 @@
     <div class="card">
       <div class="cardHead">
         <div>
-          <div class="title">Run (análisis temporal)</div>
-          <div class="muted small">
-            RunId actual: <span class="mono">{{ runId || "-" }}</span>
-          </div>
+          <div class="title">Registros temporales (RUN)</div>
+       
         </div>
 
         <div class="actions">
-          <input v-model.trim="runName" class="input" placeholder="Nombre opcional del run" />
-          <button class="primary" @click="createRun" :disabled="loading">Crear run</button>
-          <button class="danger" @click="clearRun" :disabled="loading || !runId">Nuevo análisis (borrar)</button>
+          <button class="primary" @click="createRun" :disabled="loading">Crear analisis</button>
+          <button class="danger" @click="clearRun" :disabled="loading || !runId">Borrar registros</button>
         </div>
       </div>
 
@@ -170,14 +167,14 @@ function loadFromStorage() {
 async function createRun() {
   error.value = "";
   uploadError.value = "";
-  targetInfo.value = null;
+  
 
   loading.value = true;
   try {
     const j = await apiFetch(`/api/telco/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: runName.value || null }),
+      body: JSON.stringify({})
     });
 
     runId.value = j.run.id;
@@ -196,8 +193,9 @@ async function createRun() {
 }
 
 async function clearRun() {
-  if (!runId.value) return;
-
+  if (!runId.value) {
+    throw new Error("No hay runId. Crea un run primero.");
+  }
   const ok = confirm("Esto borrará lo cargado en este run (análisis temporal). ¿Continuar?");
   if (!ok) return;
 
@@ -209,17 +207,15 @@ async function clearRun() {
     const j = await apiFetch(`/api/telco/runs/${runId.value}/clear`, { method: "DELETE" });
 
     uploadSummary.value = null;
-    targetInfo.value = null;
     files.value = [];
     if (fileEl.value) fileEl.value.value = "";
 
     alert(`Listo. Eliminados: ${j.deleted}`);
-  } catch (e) {
-    error.value = String(e?.message || e);
   } finally {
     loading.value = false;
   }
 }
+
 
 function onPickFiles(ev) {
   const list = Array.from(ev.target.files || []);

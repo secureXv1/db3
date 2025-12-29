@@ -159,11 +159,14 @@ async function getPrimaryTarget(runId) {
 // Crear run
 router.post("/runs", authRequired, async (req, res) => {
   try {
-    const name = String(req.body?.name ?? "").trim() || null;
     const created_by = req.user?.id ?? null;
 
+    // ✅ nombre automático: username + fecha/hora
+    const uname = String(req.user?.username ?? "usuario").trim() || "usuario";
+    const name = `${uname} - ${new Date().toISOString().slice(0,19).replace("T"," ")}`;
+
     const r = await pool.query(
-      `INSERT INTO analysis_runs (created_by, name) VALUES ($1, $2) RETURNING id, created_at`,
+      `INSERT INTO analysis_runs (created_by, name) VALUES ($1, $2) RETURNING id, created_at, name`,
       [created_by, name]
     );
 
