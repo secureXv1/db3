@@ -17,8 +17,10 @@
     <div class="card">
       <div class="cardHead">
         <div>
-          <div class="title">Registros temporales (RUN)</div>
-       
+          <div class="title">Sesión (Run)</div>
+          <div class="muted small">
+            Se guarda en localStorage como <span class="mono">telco_run_id</span>.
+          </div>
         </div>
 
         <div class="actions">
@@ -32,8 +34,10 @@
       </div>
 
       <div class="ok" v-if="runMeta && runId">
-        Creado: <b>{{ fmtTs(runMeta.created_at) }}</b>
-        <span v-if="runMeta.name"> | Nombre: <b>{{ runMeta.name }}</b></span>
+        Creado:
+        <b>{{ fmtTs(runMeta.created_at) }}</b>
+        <span class="muted small"> · runId:</span>
+        <b class="mono">{{ runId }}</b>
       </div>
     </div>
 
@@ -49,19 +53,15 @@
 
         <div class="actions">
           <input ref="fileEl" type="file" multiple accept=".xlsx,.xls" @change="onPickFiles" />
-          <button class="primary" @click="upload" :disabled="loading || !runId || !files.length">
+          <button class="primary" @click="uploadXdr" :disabled="loading || !runId || !files.length">
             {{ loading ? "Subiendo..." : "Subir" }}
           </button>
-          <button class="ghost" @click="clearPicked" :disabled="loading || !files.length">
-            Quitar
-          </button>
+          <button class="ghost" @click="clearPicked" :disabled="loading || !files.length">Quitar</button>
         </div>
       </div>
 
       <div class="muted small" v-if="files.length">
-        Archivos: <b>{{ files.length }}</b> —
-        <span class="mono">{{ files.map(f => f.name).slice(0,3).join(", ") }}</span>
-        <span v-if="files.length>3"> …</span>
+        Archivos seleccionados: <b>{{ files.length }}</b>
       </div>
 
       <div class="grid2" v-if="uploadSummary">
@@ -105,12 +105,173 @@
       </div>
 
       <div class="error" v-if="uploadError">{{ uploadError }}</div>
-
-
     </div>
 
-    <!-- Target -->
+    <!-- Análisis -->
+    <div class="card">
+      <div class="cardHead">
+        <div>
+          <div class="title">Análisis (flujos)</div>
+          <div class="muted small">Filtros aplican a resumen y timeline.</div>
+        </div>
 
+        <div class="actions">
+          <button class="primary" @click="runAnalysis" :disabled="loading || !runId">
+            {{ loading ? "Analizando..." : "Generar análisis" }}
+          </button>
+          <button class="ghost" @click="resetFilters" :disabled="loading">Limpiar filtros</button>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="field">
+          <label>Desde</label>
+          <input v-model="filters.from" type="datetime-local" />
+        </div>
+
+        <div class="field">
+          <label>Hasta</label>
+          <input v-model="filters.to" type="datetime-local" />
+        </div>
+
+        <div class="field">
+          <label>Dirección</label>
+          <select v-model="filters.dir">
+            <option value="BOTH">Ambas</option>
+            <option value="IN">Entrantes</option>
+            <option value="OUT">Salientes</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label>Horario (hora)</label>
+          <div class="rowInline">
+            <input v-model.number="filters.hour_from" type="number" min="0" max="23" class="num" />
+            <span class="muted small">a</span>
+            <input v-model.number="filters.hour_to" type="number" min="0" max="23" class="num" />
+          </div>
+          <div class="muted tiny">Ej: 22 a 6 cruza medianoche.</div>
+        </div>
+
+        <div class="field">
+          <label>Buscar número</label>
+          <input v-model.trim="filters.q" placeholder="310..., 300..." />
+          <div class="muted tiny">Filtra tablas en pantalla.</div>
+        </div>
+
+        <div class="field">
+          <label>Límite timeline</label>
+          <input v-model.number="filters.limit" type="number" min="50" max="20000" class="num" />
+        </div>
+      </div>
+    </div>
+
+    <div class="card" v-if="flowsSummary">
+      <div class="title">Resumen</div>
+
+      <div class="grid2">
+        <div class="kpi">
+          <div class="kLabel">Total llamadas</div>
+          <div class="kVal">{{ flowsSummary.kpis.total_calls }}</div>
+        </div>
+        <div class="kpi">
+          <div class="kLabel">A únicos</div>
+          <div class="kVal">{{ flowsSummary.kpis.uniq_callers }}</div>
+        </div>
+        <div class="kpi">
+          <div class="kLabel">B únicos</div>
+          <div class="kVal">{{ flowsSummary.kpis.uniq_receivers }}</div>
+        </div>
+        <div class="kpi">
+          <div class="kLabel">Enlaces únicos (A→B)</div>
+          <div class="kVal">{{ flowsSummary.kpis.uniq_edges }}</div>
+        </div>
+      </div>
+
+      <div class="muted small" style="margin-top:8px">
+        Rango: <b>{{ fmtTs(flowsSummary.kpis.min_ts) }}</b> → <b>{{ fmtTs(flowsSummary.kpis.max_ts) }}</b>
+      </div>
+    </div>
+
+    <div class="card" v-if="flowsSummary?.top_edges?.length">
+      <div class="cardHead">
+        <div>
+          <div class="title">Top enlaces (A → B)</div>
+          <div class="muted small">Ordenado por cantidad de llamadas</div>
+        </div>
+      </div>
+
+      <div class="tableWrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>A (origen)</th>
+              <th>B (destino)</th>
+              <th>Llamadas</th>
+              <th>Duración total</th>
+              <th>Primera</th>
+              <th>Última</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(e, idx) in filteredEdges" :key="e.src + '->' + e.dst">
+              <td class="mono">{{ idx + 1 }}</td>
+              <td class="mono">{{ e.src }}</td>
+              <td class="mono">{{ e.dst }}</td>
+              <td class="mono">{{ e.calls }}</td>
+              <td class="mono">{{ e.total_duration }}</td>
+              <td class="mono">{{ fmtTs(e.first_ts) }}</td>
+              <td class="mono">{{ fmtTs(e.last_ts) }}</td>
+            </tr>
+
+            <tr v-if="filteredEdges.length === 0">
+              <td colspan="7" class="empty">Sin resultados (según búsqueda)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" v-if="flowsTimeline?.length">
+      <div class="cardHead">
+        <div>
+          <div class="title">Timeline (eventos)</div>
+          <div class="muted small">Ordenado por fecha/hora</div>
+        </div>
+      </div>
+
+      <div class="tableWrap">
+        <table>
+          <thead>
+            <tr>
+              <th>TS</th>
+              <th>Dir</th>
+              <th>A</th>
+              <th>B</th>
+              <th>Dur(s)</th>
+              <th>Celda inicio</th>
+              <th>Celda final</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="r in filteredTimeline" :key="r.id">
+              <td class="mono">{{ fmtTs(r.call_ts) }}</td>
+              <td class="mono">{{ r.direction }}</td>
+              <td class="mono">{{ r.a_number }}</td>
+              <td class="mono">{{ r.b_number }}</td>
+              <td class="mono">{{ r.duration_sec ?? "-" }}</td>
+              <td class="mono">{{ r.nombre_celda_inicio || r.celda_inicio || "-" }}</td>
+              <td class="mono">{{ r.nombre_celda_final || r.celda_final || "-" }}</td>
+            </tr>
+
+            <tr v-if="filteredTimeline.length === 0">
+              <td colspan="7" class="empty">Sin resultados (según búsqueda)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
 
     <div class="error" v-if="error">{{ error }}</div>
 
@@ -121,7 +282,7 @@
 </template>
 
 <script setup>
-import { ref } from "vue";
+import { ref, computed } from "vue";
 
 const API = import.meta.env.VITE_API_BASE || "";
 
@@ -138,13 +299,24 @@ const files = ref([]);
 const uploadSummary = ref(null);
 const uploadError = ref("");
 
+const filters = ref({
+  from: "",
+  to: "",
+  dir: "BOTH",
+  hour_from: 0,
+  hour_to: 23,
+  limit: 2000,
+  q: ""
+});
 
+const flowsSummary = ref(null);
+const flowsTimeline = ref([]);
 
 function authHeaders(extra = {}) {
   const t = localStorage.getItem("token");
   return {
     ...(extra || {}),
-    ...(t ? { Authorization: `Bearer ${t}` } : {}),
+    ...(t ? { Authorization: `Bearer ${t}` } : {})
   };
 }
 
@@ -160,14 +332,12 @@ async function apiFetch(path, opts = {}) {
 }
 
 function loadFromStorage() {
-  const v = Number(localStorage.getItem("telco_run_id") || 0) || null;
-  runId.value = v;
+  runId.value = Number(localStorage.getItem("telco_run_id") || 0) || null;
 }
 
 async function createRun() {
   error.value = "";
   uploadError.value = "";
-  
 
   loading.value = true;
   try {
@@ -192,6 +362,44 @@ async function createRun() {
   }
 }
 
+function onPickFiles(e) {
+  files.value = Array.from(e.target.files || []);
+}
+
+function clearPicked() {
+  files.value = [];
+  if (fileEl.value) fileEl.value.value = "";
+}
+
+async function uploadXdr() {
+  if (!runId.value || !files.value.length) return;
+
+  uploadError.value = "";
+  error.value = "";
+  loading.value = true;
+
+  try {
+    const fd = new FormData();
+    for (const f of files.value) fd.append("files", f);
+
+    const t = localStorage.getItem("token");
+    const r = await fetch(`${API}/api/telco/runs/${runId.value}/upload-xdr`, {
+      method: "POST",
+      headers: t ? { Authorization: `Bearer ${t}` } : {},
+      body: fd
+    });
+
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) throw new Error(j.error || `HTTP ${r.status}`);
+
+    uploadSummary.value = j;
+  } catch (e) {
+    uploadError.value = String(e?.message || e);
+  } finally {
+    loading.value = false;
+  }
+}
+
 async function clearRun() {
   if (!runId.value) {
     throw new Error("No hay runId. Crea un run primero.");
@@ -207,55 +415,89 @@ async function clearRun() {
     const j = await apiFetch(`/api/telco/runs/${runId.value}/clear`, { method: "DELETE" });
 
     uploadSummary.value = null;
+    flowsSummary.value = null;
+    flowsTimeline.value = [];
     files.value = [];
     if (fileEl.value) fileEl.value.value = "";
 
     alert(`Listo. Eliminados: ${j.deleted}`);
-  } finally {
-    loading.value = false;
-  }
-}
-
-
-function onPickFiles(ev) {
-  const list = Array.from(ev.target.files || []);
-  files.value = list;
-}
-
-function clearPicked() {
-  files.value = [];
-  if (fileEl.value) fileEl.value.value = "";
-}
-
-async function upload() {
-  if (!runId.value || !files.value.length) return;
-
-  error.value = "";
-  uploadError.value = "";
-  loading.value = true;
-
-  try {
-    const fd = new FormData();
-    for (const f of files.value) fd.append("files", f);
-
-    const t = localStorage.getItem("token");
-    const r = await fetch(`${API}/api/telco/runs/${runId.value}/upload-xdr`, {
-      method: "POST",
-      headers: t ? { Authorization: `Bearer ${t}` } : {},
-      body: fd,
-    });
-
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok || j.ok === false) throw new Error(j.error || `HTTP ${r.status}`);
-
-    uploadSummary.value = j;
   } catch (e) {
-    uploadError.value = String(e?.message || e);
+    error.value = String(e?.message || e);
   } finally {
     loading.value = false;
   }
 }
 
+function toBogotaTimestamptz(localDT) {
+  const s = String(localDT || "").trim();
+  if (!s) return "";
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(s)) return `${s}:00-05:00`;
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(s)) return `${s}-05:00`;
+  return s;
+}
+
+function buildQs() {
+  const p = new URLSearchParams();
+
+  const from = toBogotaTimestamptz(filters.value.from);
+  const to = toBogotaTimestamptz(filters.value.to);
+  if (from) p.set("from", from);
+  if (to) p.set("to", to);
+
+  p.set("dir", filters.value.dir || "BOTH");
+  p.set("hour_from", String(filters.value.hour_from ?? 0));
+  p.set("hour_to", String(filters.value.hour_to ?? 23));
+  p.set("limit", String(filters.value.limit ?? 2000));
+
+  return p.toString();
+}
+
+async function runAnalysis() {
+  if (!runId.value) {
+    error.value = "No hay runId. Crea un análisis primero.";
+    return;
+  }
+  error.value = "";
+  loading.value = true;
+  try {
+    const q = buildQs();
+    const s = await apiFetch(`/api/telco/runs/${runId.value}/flows/summary?${q}`, { method: "GET" });
+    flowsSummary.value = s;
+
+    const t = await apiFetch(`/api/telco/runs/${runId.value}/flows/timeline?${q}`, { method: "GET" });
+    flowsTimeline.value = t.rows || [];
+  } catch (e) {
+    error.value = String(e?.message || e);
+  } finally {
+    loading.value = false;
+  }
+}
+
+function resetFilters() {
+  filters.value = {
+    from: "",
+    to: "",
+    dir: "BOTH",
+    hour_from: 0,
+    hour_to: 23,
+    limit: 2000,
+    q: ""
+  };
+}
+
+const filteredEdges = computed(() => {
+  const q = String(filters.value.q || "").trim();
+  const edges = flowsSummary.value?.top_edges || [];
+  if (!q) return edges;
+  return edges.filter(e => String(e.src).includes(q) || String(e.dst).includes(q));
+});
+
+const filteredTimeline = computed(() => {
+  const q = String(filters.value.q || "").trim();
+  const rows = flowsTimeline.value || [];
+  if (!q) return rows;
+  return rows.filter(r => String(r.a_number).includes(q) || String(r.b_number).includes(q));
+});
 
 function fmtTs(ts) {
   if (!ts) return "-";
@@ -264,7 +506,7 @@ function fmtTs(ts) {
 </script>
 
 <style scoped>
-/* Re-usa variables globales que ya defines en App.vue (:global(:root){...}) */
+/* Reusa tus variables globales (las que ya defines en App.vue (:global(:root){...}) */
 
 .panel{
   background: var(--glass);
@@ -276,15 +518,6 @@ function fmtTs(ts) {
   margin-top: 12px;
   position: relative;
 }
-.panel::before{
-  content:"";
-  position:absolute;
-  left: 14px; right:14px; top:0;
-  height:2px;
-  background: linear-gradient(90deg, transparent, rgba(34,211,238,.8), rgba(96,165,250,.7), transparent);
-  opacity:.9;
-}
-
 .headRow{
   display:flex;
   align-items:flex-start;
@@ -294,6 +527,7 @@ function fmtTs(ts) {
 .h2{ margin:0; font-size: 18px; font-weight: 900; }
 .muted{ color: var(--muted); }
 .small{ font-size: 12px; }
+.tiny{ font-size: 11px; opacity: .9; }
 .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
 
 .card{
@@ -311,25 +545,12 @@ function fmtTs(ts) {
   flex-wrap: wrap;
 }
 .title{ font-weight: 900; }
+
 .actions{
   display:flex;
   gap: 8px;
   align-items:center;
   flex-wrap: wrap;
-}
-
-.input{
-  border: 1px solid var(--stroke);
-  border-radius: 12px;
-  padding: 10px 12px;
-  outline: none;
-  background: rgba(255,255,255,.06);
-  color: var(--text);
-  min-width: 240px;
-}
-.input:focus{
-  border-color: rgba(34,211,238,.55);
-  box-shadow: 0 0 0 4px rgba(34,211,238,.12);
 }
 
 button{
@@ -379,7 +600,7 @@ button:disabled{ opacity:.55; cursor:not-allowed; }
 table{
   width: 100%;
   border-collapse: collapse;
-  min-width: 700px;
+  min-width: 900px;
 }
 th, td{
   padding: 10px 10px;
@@ -412,4 +633,39 @@ th{ color: var(--muted); font-weight: 900; }
 }
 .hintRow{ margin-top: 10px; display:flex; gap: 10px; }
 .legal{ margin-top: 10px; opacity: .85; }
+
+/* --- Filtros análisis --- */
+.grid{
+  margin-top: 10px;
+  display:grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.field label{
+  display:block;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 900;
+  margin-bottom: 6px;
+}
+.field input, .field select{
+  width: 100%;
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  padding: 10px 12px;
+  outline: none;
+  background: rgba(255,255,255,.06);
+  color: var(--text);
+}
+.field input:focus, .field select:focus{
+  border-color: rgba(34,211,238,.55);
+  box-shadow: 0 0 0 4px rgba(34,211,238,.12);
+}
+.rowInline{ display:flex; gap:8px; align-items:center; }
+.num{ max-width: 170px; }
+.empty{
+  text-align:center;
+  padding: 18px 10px;
+  color: var(--muted);
+}
 </style>

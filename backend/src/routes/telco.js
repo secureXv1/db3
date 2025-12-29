@@ -154,6 +154,58 @@ async function getPrimaryTarget(runId) {
   return r.rows[0]?.target || null;
 }
 
+function buildWhereCalls({ runId, from, to, hourFrom, hourTo, dir }, params) {
+  const where = [];
+  params.push(runId);
+  where.push(`run_id = $${params.length}`);
+
+  if (from) {
+    params.push(from);
+    where.push(`call_ts >= $${params.length}::timestamptz`);
+  }
+  if (to) {
+    params.push(to);
+    where.push(`call_ts <= $${params.length}::timestamptz`);
+  }
+
+  // Filtro por dirección (IN/OUT/BOTH)
+  if (dir && dir !== "BOTH") {
+    params.push(dir);
+    where.push(`direction = $${params.length}::call_direction`);
+  }
+
+  // Filtro horario (America/Bogota), soporta rangos que cruzan medianoche
+  if (hourFrom != null && hourTo != null) {
+    const hf = Number(hourFrom);
+    const ht = Number(hourTo);
+    if (Number.isFinite(hf) && Number.isFinite(ht) && hf >= 0 && hf <= 23 && ht >= 0 && ht <= 23) {
+      params.push(hf, ht);
+      const pHf = `$${params.length - 1}`;
+      const pHt = `$${params.length}`;
+
+      const hourExpr = `EXTRACT(HOUR FROM (call_ts AT TIME ZONE 'America/Bogota'))`;
+
+      if (hf <= ht) {
+        where.push(`${hourExpr} BETWEEN ${pHf} AND ${pHt}`);
+      } else {
+        // Ej: 22 -> 6 (cruza medianoche)
+        where.push(`(${hourExpr} >= ${pHf} OR ${hourExpr} <= ${pHt})`);
+      }
+    }
+  }
+
+  return where.length ? `WHERE ${where.join(" AND ")}` : "";
+}
+
+function clampInt(v, def, min, max) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  return Math.max(min, Math.min(max, Math.trunc(n)));
+}
+
+
+
+
 // ===== Routes =====
 
 // Crear run
@@ -286,6 +338,193 @@ router.get("/runs/:runId/target", authRequired, async (req, res) => {
       primaryTarget: primary?.target || null,
       primaryCount: primary?.cnt || 0,
       topTargets: top.rows
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+router.get("/runs/:runId/flows/summary", authRequired, async (req, res) => {
+  try {
+    const runId = Number(req.params.runId);
+    if (!Number.isFinite(runId)) return res.status(400).json({ ok: false, error: "runId inválido" });
+
+    const { from = null, to = null, dir = "BOTH", hour_from = null, hour_to = null } = req.query;
+
+    const params = [];
+    const where = buildWhereCalls(
+      { runId, from, to, dir, hourFrom: hour_from, hourTo: hour_to },
+      params
+    );
+
+    const kpi = await pool.query(
+      `
+      SELECT
+        COUNT(*)::bigint AS total_calls,
+        COUNT(DISTINCT a_number)::bigint AS uniq_callers,
+        COUNT(DISTINCT b_number)::bigint AS uniq_receivers,
+        COUNT(DISTINCT (a_number || '->' || b_number))::bigint AS uniq_edges,
+        MIN(call_ts) AS min_ts,
+        MAX(call_ts) AS max_ts
+      FROM call_records_tmp
+      ${where};
+      `,
+      params
+    );
+
+    // Top enlaces dirigidos (A->B)
+    const topEdges = await pool.query(
+      `
+      SELECT
+        a_number AS src,
+        b_number AS dst,
+        COUNT(*)::bigint AS calls,
+        COALESCE(SUM(duration_sec),0)::bigint AS total_duration,
+        MIN(call_ts) AS first_ts,
+        MAX(call_ts) AS last_ts
+      FROM call_records_tmp
+      ${where}
+      GROUP BY a_number, b_number
+      ORDER BY calls DESC
+      LIMIT 50;
+      `,
+      params
+    );
+
+    res.json({
+      ok: true,
+      filters: { from, to, dir, hour_from, hour_to },
+      kpis: kpi.rows[0],
+      top_edges: topEdges.rows
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+router.get("/runs/:runId/flows/graph", authRequired, async (req, res) => {
+  try {
+    const runId = Number(req.params.runId);
+    if (!Number.isFinite(runId)) return res.status(400).json({ ok: false, error: "runId inválido" });
+
+    const {
+      from = null,
+      to = null,
+      dir = "BOTH",
+      hour_from = null,
+      hour_to = null,
+      min_calls = 2,
+      max_edges = 600,
+      max_nodes = 250
+    } = req.query;
+
+    const MIN_CALLS = clampInt(min_calls, 2, 1, 999999);
+    const MAX_EDGES = clampInt(max_edges, 600, 50, 5000);
+    const MAX_NODES = clampInt(max_nodes, 250, 20, 2000);
+
+    const params = [];
+    const where = buildWhereCalls(
+      { runId, from, to, dir, hourFrom: hour_from, hourTo: hour_to },
+      params
+    );
+
+    // 1) Edges agregados (dirigidos)
+    params.push(MIN_CALLS, MAX_EDGES);
+    const edgesQ = await pool.query(
+      `
+      WITH e AS (
+        SELECT
+          a_number AS source,
+          b_number AS target,
+          COUNT(*)::bigint AS calls,
+          COALESCE(SUM(duration_sec),0)::bigint AS total_duration,
+          MIN(call_ts) AS first_ts,
+          MAX(call_ts) AS last_ts
+        FROM call_records_tmp
+        ${where}
+        GROUP BY a_number, b_number
+        HAVING COUNT(*) >= $${params.length - 1}
+        ORDER BY calls DESC
+        LIMIT $${params.length}
+      )
+      SELECT * FROM e;
+      `,
+      params
+    );
+
+    const edges = edgesQ.rows;
+
+    // 2) Nodes: los que aparecen en edges (limit)
+    const nodeSet = new Set();
+    for (const e of edges) {
+      nodeSet.add(e.source);
+      nodeSet.add(e.target);
+      if (nodeSet.size >= MAX_NODES) break;
+    }
+    const nodes = Array.from(nodeSet).map((id) => ({ id, label: id }));
+
+    res.json({
+      ok: true,
+      filters: { from, to, dir, hour_from, hour_to, min_calls: MIN_CALLS },
+      nodes,
+      edges
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+router.get("/runs/:runId/flows/timeline", authRequired, async (req, res) => {
+  try {
+    const runId = Number(req.params.runId);
+    if (!Number.isFinite(runId)) return res.status(400).json({ ok: false, error: "runId inválido" });
+
+    const {
+      from = null,
+      to = null,
+      dir = "BOTH",
+      hour_from = null,
+      hour_to = null,
+      limit = 2000
+    } = req.query;
+
+    const LIMIT = clampInt(limit, 2000, 50, 20000);
+
+    const params = [];
+    const where = buildWhereCalls(
+      { runId, from, to, dir, hourFrom: hour_from, hourTo: hour_to },
+      params
+    );
+
+    params.push(LIMIT);
+
+    const q = await pool.query(
+      `
+      SELECT
+        id,
+        call_ts,
+        direction,
+        a_number,
+        b_number,
+        duration_sec,
+        lac_inicio,
+        celda_inicio,
+        nombre_celda_inicio,
+        lac_final,
+        celda_final,
+        nombre_celda_final
+      FROM call_records_tmp
+      ${where}
+      ORDER BY call_ts ASC
+      LIMIT $${params.length};
+      `,
+      params
+    );
+
+    res.json({
+      ok: true,
+      filters: { from, to, dir, hour_from, hour_to, limit: LIMIT },
+      rows: q.rows
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
