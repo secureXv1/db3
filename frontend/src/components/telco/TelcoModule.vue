@@ -13,6 +13,17 @@
       </div>
     </div>
 
+   
+        <div class="tabsRow">
+      <button class="ghost" :class="{ active: activeSub==='xdr' }" @click="activeSub='xdr'">
+        Analisis RETEL
+      </button>
+      <button class="ghost" :class="{ active: activeSub==='antennas' }" @click="activeSub='antennas'">
+        Antenas
+      </button>
+    </div>
+
+    <div v-if="activeSub==='xdr'">
     <!-- Run -->
     <div class="card">
       <div class="cardHead">
@@ -278,16 +289,27 @@
     <div class="muted small legal">
       Úsalo solo con autorización y conforme a la ley/política de tu entidad (datos sensibles).
     </div>
+
+        </div>
+
+    <div v-else>
+      <AntennaSection />
+    </div>
+
+
   </section>
 </template>
 
 <script setup>
 import { ref, computed } from "vue";
+import AntennaSection from "./AntennaSection.vue";
 
 const API = import.meta.env.VITE_API_BASE || "";
 
 const loading = ref(false);
 const error = ref("");
+const activeSub = ref("xdr");
+
 
 const runId = ref(Number(localStorage.getItem("telco_run_id") || 0) || null);
 const runMeta = ref(null);
@@ -668,4 +690,20 @@ th{ color: var(--muted); font-weight: 900; }
   padding: 18px 10px;
   color: var(--muted);
 }
+
+.tabsRow{
+  margin-top: 10px;
+  display:flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tabsRow .ghost.active{
+  border-color: rgba(34,211,238,.55);
+  background: rgba(34,211,238,.12);
+  font-weight: 900;
+}
+
+
+
+
 </style>

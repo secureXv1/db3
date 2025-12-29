@@ -5,6 +5,7 @@ import detectionsRouter from "./routes/detections.js";
 import ingestRouter from "./routes/ingest.js";
 import authRoutes from "./routes/auth.js";
 import telcoRouter from "./routes/telco.js";
+import antennasRouter from "./routes/antennas.js";
 
 dotenv.config();
 
@@ -17,6 +18,7 @@ app.use("/api/detections", detectionsRouter);
 app.use("/api/ingest", ingestRouter);
 app.use("/api/auth", authRoutes);
 app.use("/api/telco", telcoRouter);
+app.use("/api/antennas", antennasRouter);
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => {
