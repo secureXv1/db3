@@ -118,11 +118,11 @@ export function readAntennasExcel(filePath) {
 
     if (OP === "TIGO") {
       cell_id = pick(o, ["celda"]);
-      lat = toFloat(pick(o, ["latitud_"]));
-      lon = toFloat(pick(o, ["longitud_"]));
+      lat = toFloat(pick(o, ["latitud_", "latitud"]));
+      lon = toFloat(pick(o, ["longitud_", "longitud"]));
       address = pick(o, ["sit_direccion"]);
       municipio = pick(o, ["mun_description"]);
-      lac_tac = null;
+      lac_tac = "";
       cell_name = pick(o, ["sector"]);
       site_name = pick(o, ["description"]);
       departamento = pick(o, ["depto_description"]);
@@ -186,6 +186,7 @@ export function readAntennasExcel(filePath) {
     }
 
     if (!cell_id) { skipped++; continue; }
+    if (lat == null || lon == null) { skipped++; continue; }
 
     // operadorGuess
     const op = o.operador || o.operator || null;
@@ -194,8 +195,8 @@ export function readAntennasExcel(filePath) {
     out.push({
       operator: operatorRaw,
       cell_id: String(cell_id).trim(),
-      lac_tac: lac_tac != null && String(lac_tac).trim() !== "" ? String(lac_tac).trim() : null,
-      cell_name: cell_name != null && String(cell_name).trim() !== "" ? String(cell_name).trim() : null,
+      lac_tac: String(lac_tac ?? "").trim(),      // ✅ nunca null
+      cell_name: String(cell_name ?? "").trim(),  // ✅ nunca null
       site_name: site_name != null && String(site_name).trim() !== "" ? String(site_name).trim() : null,
       address: address != null && String(address).trim() !== "" ? String(address).trim() : null,
       departamento: departamento != null && String(departamento).trim() !== "" ? String(departamento).trim() : null,
@@ -232,12 +233,11 @@ export function readAntennasExcel(filePath) {
     let exactDupCount = 0;
 
     for (const row of out) {
-    const key = [
-        norm(row.operator),
-        norm(row.cell_id),
-        norm(row.lac_tac),     // si viene null -> ""
-        norm(row.cell_name),
-    ].join("|");
+       const key = [
+      norm(row.operator),
+      norm(row.cell_id),
+      norm(row.cell_name),
+      ].join("|");
 
     if (seen.has(key)) {
         exactDupCount++;

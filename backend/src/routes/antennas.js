@@ -157,14 +157,15 @@ router.post("/upload", authRequired, upload.array("files", 20), async (req, res)
         );
       }
 
-        const rows = (parsed.rows || []).map(r => ({
+      const rows = (parsed.rows || []).map(r => ({
         ...r,
         operator: normOp(r.operator || operatorGuess || "UNKNOWN"),
-        cell_name: String(r.cell_name ?? "").trim(),
+        lac_tac: String(r.lac_tac ?? "").trim(),     // ✅ evita NULL
+        cell_name: String(r.cell_name ?? "").trim(), // ✅ buena práctica también
         is_active: true,
         last_import_id: importId,
         updated_by: created_by
-        }));
+      }));
 
       totals.seen += rows.length;
       totals.skipped += Number(parsed.skipped || 0);
