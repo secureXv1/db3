@@ -311,4 +311,18 @@ router.get("/", authRequired, async (req, res) => {
   }
 });
 
+router.get("/:id", authRequired, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "ID inválido" });
+
+    const r = await pool.query(`SELECT * FROM antennas WHERE id=$1`, [id]);
+    if (!r.rows.length) return res.status(404).json({ ok: false, error: "No encontrada" });
+
+    res.json({ ok: true, row: r.rows[0] });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
 export default router;

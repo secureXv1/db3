@@ -1,4 +1,4 @@
-<!-- AntennaSection.vue (ARREGLADO: tus estilos scoped vuelven a aplicar) -->
+
 <template>
   <section class="panel">
     <div class="headRow">
@@ -23,6 +23,7 @@
       </div>
     </div>
 
+    <!-- Upload -->
     <div class="card" v-if="files.length">
       <div class="cardHead">
         <div>
@@ -66,6 +67,7 @@
       <div class="error" v-if="uploadError">{{ uploadError }}</div>
     </div>
 
+    <!-- Filtros -->
     <div class="card">
       <div class="cardHead">
         <div>
@@ -116,6 +118,7 @@
       </div>
     </div>
 
+    <!-- Resultados -->
     <div class="tableCard">
       <div class="tableTop">
         <div class="titleRow">
@@ -135,8 +138,10 @@
           v-for="r in rows"
           :key="r.id"
           class="resultItem"
+          :class="{ active: expandedId === r.id }"
           @mouseenter="hoverKey = makeKey(r)"
           @mouseleave="hoverKey = null"
+          @click="toggleRow(r)"
         >
           <div class="rTop">
             <div class="mono rMain">
@@ -145,12 +150,63 @@
             </div>
             <div class="mono rCoords">{{ r.lat ?? "-" }}, {{ r.lon ?? "-" }}</div>
           </div>
+
           <div class="rMid">
             <span class="mono">{{ r.cell_name || r.site_name || "-" }}</span>
             <span class="muted">· {{ r.departamento || "-" }} / {{ r.municipio || "-" }}</span>
           </div>
-          <div class="rBot muted small">
-            {{ r.address || "" }}
+
+          <div class="rBot muted small">{{ r.address || "" }}</div>
+
+          <!-- detalle -->
+          <div v-if="expandedId === r.id" class="detailBox" @click.stop>
+            <div v-if="detailLoading" class="muted small">Cargando detalle…</div>
+            <div v-else-if="detailError" class="error" style="margin:0;">{{ detailError }}</div>
+
+            <div v-else-if="detailRow" class="detailGrid">
+              <div class="dItem"><div class="dK">ID</div><div class="dV mono">{{ detailRow.id }}</div></div>
+              <div class="dItem"><div class="dK">Operador</div><div class="dV mono">{{ detailRow.operator }}</div></div>
+              <div class="dItem"><div class="dK">Cell ID</div><div class="dV mono">{{ detailRow.cell_id }}</div></div>
+              <div class="dItem"><div class="dK">Cell Name</div><div class="dV mono">{{ detailRow.cell_name }}</div></div>
+
+              <div class="dItem"><div class="dK">LAC/TAC</div><div class="dV mono">{{ detailRow.lac_tac }}</div></div>
+              <div class="dItem"><div class="dK">Site</div><div class="dV mono">{{ detailRow.site_name }}</div></div>
+              <div class="dItem"><div class="dK">Dirección</div><div class="dV">{{ detailRow.address }}</div></div>
+
+              <div class="dItem"><div class="dK">Departamento</div><div class="dV mono">{{ detailRow.departamento }}</div></div>
+              <div class="dItem"><div class="dK">Municipio</div><div class="dV mono">{{ detailRow.municipio }}</div></div>
+              <div class="dItem"><div class="dK">Tecnología</div><div class="dV mono">{{ detailRow.technology }}</div></div>
+              <div class="dItem"><div class="dK">Vendor</div><div class="dV mono">{{ detailRow.vendor }}</div></div>
+
+              <div class="dItem"><div class="dK">Azimuth</div><div class="dV mono">{{ detailRow.azimuth }}</div></div>
+              <div class="dItem"><div class="dK">Lat</div><div class="dV mono">{{ detailRow.lat }}</div></div>
+              <div class="dItem"><div class="dK">Lon</div><div class="dV mono">{{ detailRow.lon }}</div></div>
+
+              <div class="dItem"><div class="dK">Horiz beam</div><div class="dV mono">{{ detailRow.horiz_beam_angle }}</div></div>
+              <div class="dItem"><div class="dK">Vert beam</div><div class="dV mono">{{ detailRow.vertical_beam_angle }}</div></div>
+              <div class="dItem"><div class="dK">Beam angle</div><div class="dV mono">{{ detailRow.beam_angle }}</div></div>
+              <div class="dItem"><div class="dK">Radius</div><div class="dV mono">{{ detailRow.radius }}</div></div>
+
+              <div class="dItem"><div class="dK">Altura</div><div class="dV mono">{{ detailRow.altura }}</div></div>
+              <div class="dItem"><div class="dK">Gain</div><div class="dV mono">{{ detailRow.gain }}</div></div>
+              <div class="dItem"><div class="dK">Beam</div><div class="dV mono">{{ detailRow.beam }}</div></div>
+              <div class="dItem"><div class="dK">Twist</div><div class="dV mono">{{ detailRow.twist }}</div></div>
+
+              <div class="dItem"><div class="dK">Tipo estructura</div><div class="dV mono">{{ detailRow.tipo_estructura }}</div></div>
+              <div class="dItem"><div class="dK">Detalle estructura</div><div class="dV mono">{{ detailRow.detalle_estructura }}</div></div>
+              <div class="dItem"><div class="dK">Banda</div><div class="dV mono">{{ detailRow.banda }}</div></div>
+              <div class="dItem"><div class="dK">Portadora</div><div class="dV mono">{{ detailRow.portadora }}</div></div>
+
+              <div class="dItem"><div class="dK">Activo</div><div class="dV mono">{{ detailRow.is_active }}</div></div>
+              <div class="dItem"><div class="dK">Updated</div><div class="dV mono">{{ detailRow.updated_at }}</div></div>
+
+              <div class="dItem full" v-if="detailRow.raw">
+                <div class="dK">RAW</div>
+                <pre class="rawBox mono">{{ pretty(detailRow.raw) }}</pre>
+              </div>
+            </div>
+
+            <div v-else class="muted small">Sin detalle.</div>
           </div>
         </li>
       </ul>
@@ -162,6 +218,7 @@
       <div class="error" v-if="listError">{{ listError }}</div>
     </div>
 
+    <!-- Mapa embebido -->
     <div class="card">
       <div class="cardHead">
         <div>
@@ -198,6 +255,7 @@
       </div>
     </div>
 
+    <!-- Mapa modal -->
     <AntennaMapModal
       v-if="showMapBig"
       :open="showMapBig"
@@ -248,6 +306,12 @@ const filters = ref({
 const showMapBig = ref(false);
 const mapMax = 1500;
 
+// detalle
+const expandedId = ref(null);
+const detailLoading = ref(false);
+const detailError = ref("");
+const detailRow = ref(null);
+
 function authHeaders(extra = {}) {
   const t = localStorage.getItem("token");
   return { ...(extra || {}), ...(t ? { Authorization: `Bearer ${t}` } : {}) };
@@ -259,6 +323,37 @@ async function apiFetch(path, opts = {}) {
   const j = await r.json().catch(() => ({}));
   if (!r.ok || j.ok === false) throw new Error(j.error || `HTTP ${r.status}`);
   return j;
+}
+
+function pretty(o){
+  try { return JSON.stringify(o, null, 2); } catch { return String(o); }
+}
+
+async function loadDetail(id){
+  detailLoading.value = true;
+  detailError.value = "";
+  detailRow.value = null;
+  try {
+    const j = await apiFetch(`/api/antennas/${encodeURIComponent(id)}`, { method: "GET" });
+    detailRow.value = j.row || j.data || j;
+  } catch (e) {
+    detailError.value = String(e?.message || e);
+  } finally {
+    detailLoading.value = false;
+  }
+}
+
+function toggleRow(r){
+  const id = r?.id;
+  if (!id) return;
+  if (expandedId.value === id) {
+    expandedId.value = null;
+    detailRow.value = null;
+    detailError.value = "";
+    return;
+  }
+  expandedId.value = id;
+  loadDetail(id);
 }
 
 function pickFiles() {
@@ -302,6 +397,10 @@ async function upload() {
 
     uploadSummary.value = j;
 
+    expandedId.value = null;
+    detailRow.value = null;
+    detailError.value = "";
+
     page.value = 1;
     await loadList();
     await loadMapAll();
@@ -342,6 +441,10 @@ async function loadList() {
     const j = await apiFetch(`/api/antennas?${q}`, { method: "GET" });
     rows.value = j.rows || j.items || [];
     total.value = Number(j.total || 0);
+
+    expandedId.value = null;
+    detailRow.value = null;
+    detailError.value = "";
   } catch (e) {
     listError.value = String(e?.message || e);
     rows.value = [];
@@ -627,24 +730,14 @@ button:disabled{ opacity:.55; cursor:not-allowed; }
 .resultItem{
   padding: 12px;
   border-bottom: 1px solid rgba(255,255,255,.06);
-  cursor: default;
+  cursor: pointer;
 }
-.resultItem:hover{
-  background: rgba(255,255,255,.06);
-}
-.rTop{
-  display:flex;
-  justify-content: space-between;
-  gap: 10px;
-}
+.resultItem:hover{ background: rgba(255,255,255,.06); }
+
+.rTop{ display:flex; justify-content: space-between; gap: 10px; }
 .rMain{ font-weight: 900; }
 .rCoords{ opacity:.9; }
-.rMid{
-  margin-top: 6px;
-  display:flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
+.rMid{ margin-top: 6px; display:flex; gap: 8px; flex-wrap: wrap; }
 .rBot{ margin-top: 4px; }
 
 .mapEmbed{
@@ -657,8 +750,56 @@ button:disabled{ opacity:.55; cursor:not-allowed; }
 .mapEmbed :deep(.embedWrap){ height: 100%; }
 .mapEmbed :deep(.map){ height: 100%; }
 
+/* detalle */
+.resultItem.active{ background: rgba(255,255,255,.07); }
+
+.detailBox{
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(0,0,0,.18);
+}
+.detailGrid{
+  display:grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.dItem{
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.04);
+  border-radius: 12px;
+  padding: 10px;
+}
+.dItem.full{ grid-column: 1 / -1; }
+.dK{
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 900;
+  margin-bottom: 6px;
+}
+.dV{
+  font-size: 13px;
+  color: var(--text);
+  word-break: break-word;
+}
+.rawBox{
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.35;
+  padding: 10px;
+  border-radius: 10px;
+  background: rgba(0,0,0,.22);
+  border: 1px solid rgba(255,255,255,.10);
+  overflow:auto;
+  max-height: 260px;
+}
+
 @media (max-width: 980px){
   .grid{ grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .grid2{ grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .detailGrid{ grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 </style>
