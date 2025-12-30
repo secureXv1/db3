@@ -1,3 +1,4 @@
+<!-- AntennaSection.vue (ARREGLADO: tus estilos scoped vuelven a aplicar) -->
 <template>
   <section class="panel">
     <div class="headRow">
@@ -6,8 +7,7 @@
         <div class="muted">Carga/actualiza antenas desde Excel y consulta por filtros + mapa.</div>
       </div>
 
-      <div class="right actions">
-        <!-- ✅ input oculto -->
+      <div class="actions">
         <input
           ref="fileEl"
           type="file"
@@ -16,17 +16,13 @@
           class="hiddenInput"
           @change="onPickFiles"
         />
-
-        <!-- ✅ botón único -->
         <button class="primary" @click="pickFiles" :disabled="loadingUpload">
           {{ loadingUpload ? "Actualizando..." : "Actualizar DB Antenas" }}
         </button>
-
         <button class="ghost" @click="loadList" :disabled="loadingList">Recargar</button>
       </div>
     </div>
 
-    <!-- ✅ Resumen de archivos elegidos -->
     <div class="card" v-if="files.length">
       <div class="cardHead">
         <div>
@@ -70,7 +66,6 @@
       <div class="error" v-if="uploadError">{{ uploadError }}</div>
     </div>
 
-    <!-- ✅ FILTROS -->
     <div class="card">
       <div class="cardHead">
         <div>
@@ -88,7 +83,6 @@
       </div>
 
       <div class="grid">
-        <!-- ✅ Operador dropdown -->
         <div class="field">
           <label>Operador</label>
           <select v-model="filters.operator" class="input">
@@ -122,13 +116,58 @@
       </div>
     </div>
 
-    <!-- ✅ MAPA (antes del listado) -->
+    <div class="tableCard">
+      <div class="tableTop">
+        <div class="titleRow">
+          <h2>Resultados</h2>
+          <div class="muted">Máx {{ limit }} por página</div>
+        </div>
+
+        <div class="pager">
+          <button class="ghost" @click="prevPage" :disabled="loadingList || page<=1">←</button>
+          <div>Página <b>{{ page }}</b> / {{ maxPage }} · total: <b>{{ total }}</b></div>
+          <button class="ghost" @click="nextPage" :disabled="loadingList || page>=maxPage">→</button>
+        </div>
+      </div>
+
+      <ul class="resultList" v-if="rows.length">
+        <li
+          v-for="r in rows"
+          :key="r.id"
+          class="resultItem"
+          @mouseenter="hoverKey = makeKey(r)"
+          @mouseleave="hoverKey = null"
+        >
+          <div class="rTop">
+            <div class="mono rMain">
+              <b>{{ r.operator }}</b> · {{ r.cell_id }}
+              <span class="muted" v-if="r.technology">· {{ r.technology }}</span>
+            </div>
+            <div class="mono rCoords">{{ r.lat ?? "-" }}, {{ r.lon ?? "-" }}</div>
+          </div>
+          <div class="rMid">
+            <span class="mono">{{ r.cell_name || r.site_name || "-" }}</span>
+            <span class="muted">· {{ r.departamento || "-" }} / {{ r.municipio || "-" }}</span>
+          </div>
+          <div class="rBot muted small">
+            {{ r.address || "" }}
+          </div>
+        </li>
+      </ul>
+
+      <div class="empty" v-else>
+        {{ loadingList ? "Buscando..." : "Sin resultados" }}
+      </div>
+
+      <div class="error" v-if="listError">{{ listError }}</div>
+    </div>
+
     <div class="card">
       <div class="cardHead">
         <div>
           <div class="title">Mapa</div>
           <div class="muted small">
-            Se muestran solo puntos con lat/lon válidos (máx {{ mapMax }}).
+            Se muestran puntos del filtro (máx {{ mapMax }}). Puntos visibles: <b>{{ mapPoints.length }}</b>
           </div>
         </div>
 
@@ -137,23 +176,21 @@
         </div>
       </div>
 
-      <!-- Mini resumen -->
-      <div class="muted small" v-if="rows.length">
-        Página {{ page }} / {{ maxPage }} · resultados en página: <b>{{ rows.length }}</b> · puntos en mapa: <b>{{ mapPoints.length }}</b>
-      </div>
+      <div class="muted small" v-if="mapLoading">Cargando puntos del mapa…</div>
+      <div class="error" v-if="mapError">{{ mapError }}</div>
 
-      <!-- preview simple: si no quieres preview, quita esto y deja solo el botón -->
-      <div class="mapPreview" v-if="mapPoints.length">
+      <div class="mapEmbed" v-if="mapPoints.length">
         <AntennaMapModal
+          :embedded="true"
           :open="true"
+          :showTable="false"
           :points="mapPoints"
           :subtitle="mapSubtitle"
           :maxPoints="mapMax"
+          :hoverKey="hoverKey"
+          :panOnHover="false"
           @close="() => {}"
         />
-        <div class="hintMini">
-          *Este es un “mapa embebido” (no se cierra). Usa “Abrir mapa grande” para tener el modal normal.
-        </div>
       </div>
 
       <div class="warn" v-else>
@@ -161,106 +198,20 @@
       </div>
     </div>
 
-    <!-- ✅ LISTADO (después del mapa) -->
-    <div class="tableCard">
-      <div class="tableTop">
-        <div class="titleRow">
-          <h2>Listado</h2>
-          <div class="muted">Máx 25 por página</div>
-        </div>
-
-        <div class="pager">
-          <button class="ghost" @click="prevPage" :disabled="loadingList || page<=1">←</button>
-          <div>Página <b>{{ page }}</b> / {{ maxPage }}</div>
-          <button class="ghost" @click="nextPage" :disabled="loadingList || page>=maxPage">→</button>
-        </div>
-      </div>
-
-      <div class="tableWrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Operador</th>
-              <th>CellId</th>
-              <th>Lat</th>
-              <th>Lon</th>
-              <th>Address</th>
-              <th>Municipio</th>
-              <th>LAC_TAC</th>
-              <th>Cell name</th>
-              <th>Site name</th>
-              <th>Departamento</th>
-              <th>Tecnología</th>
-              <th>Vendor</th>
-              <th>Azimuth</th>
-              <th>HBA</th>
-              <th>VBA</th>
-              <th>BA</th>
-              <th>Radius</th>
-              <th>Altura</th>
-              <th>Gain</th>
-              <th>Beam</th>
-              <th>Twist</th>
-              <th>Tipo estructura</th>
-              <th>Detalle estructura</th>
-              <th>Banda</th>
-              <th>Portadora</th>
-            </tr>
-          </thead>
-
-          <tbody>
-            <tr v-for="r in rows" :key="r.id">
-              <td class="mono">{{ r.operator || "-" }}</td>
-              <td class="mono">{{ r.cell_id || "-" }}</td>
-              <td class="mono">{{ r.lat ?? "-" }}</td>
-              <td class="mono">{{ r.lon ?? "-" }}</td>
-              <td>{{ r.address || "-" }}</td>
-              <td class="mono">{{ r.municipio || "-" }}</td>
-              <td class="mono">{{ r.lac_tac || "-" }}</td>
-              <td class="mono">{{ r.cell_name || "-" }}</td>
-              <td class="mono">{{ r.site_name || "-" }}</td>
-              <td class="mono">{{ r.departamento || "-" }}</td>
-              <td class="mono">{{ r.technology || "-" }}</td>
-              <td class="mono">{{ r.vendor ?? "-" }}</td>
-              <td class="mono">{{ r.azimuth ?? "-" }}</td>
-              <td class="mono">{{ r.horiz_beam_angle ?? "-" }}</td>
-              <td class="mono">{{ r.vertical_beam_angle ?? "-" }}</td>
-              <td class="mono">{{ r.beam_angle ?? "-" }}</td>
-              <td class="mono">{{ r.radius ?? "-" }}</td>
-              <td class="mono">{{ r.altura ?? "-" }}</td>
-              <td class="mono">{{ r.gain ?? "-" }}</td>
-              <td class="mono">{{ r.beam ?? "-" }}</td>
-              <td class="mono">{{ r.twist ?? "-" }}</td>
-              <td class="mono">{{ r.tipo_estructura ?? "-" }}</td>
-              <td class="mono">{{ r.detalle_estructura ?? "-" }}</td>
-              <td class="mono">{{ r.banda ?? "-" }}</td>
-              <td class="mono">{{ r.portadora ?? "-" }}</td>
-            </tr>
-
-            <tr v-if="rows.length===0">
-              <td colspan="25" class="empty">Sin resultados</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div class="error" v-if="listError">{{ listError }}</div>
-    </div>
-
-    <!-- Modal grande -->
     <AntennaMapModal
       v-if="showMapBig"
       :open="showMapBig"
       :points="mapPoints"
       :subtitle="mapSubtitle"
       :maxPoints="mapMax"
+      :hoverKey="hoverKey"
       @close="showMapBig=false"
     />
   </section>
 </template>
 
 <script setup>
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import AntennaMapModal from "./AntennaMapModal.vue";
 
 const API = import.meta.env.VITE_API_BASE || "";
@@ -276,9 +227,15 @@ const loadingList = ref(false);
 const listError = ref("");
 
 const page = ref(1);
-const limit = ref(25); // ✅ max 25 por página
+const limit = ref(7);
 const total = ref(0);
 const rows = ref([]);
+
+const hoverKey = ref(null);
+
+const mapRows = ref([]);
+const mapLoading = ref(false);
+const mapError = ref("");
 
 const filters = ref({
   operator: "",
@@ -311,8 +268,6 @@ function pickFiles() {
 }
 function onPickFiles(ev) {
   files.value = Array.from(ev.target.files || []);
-  // UX: si el usuario selecciona archivos, puede subir de una vez si quieres
-  // upload();
 }
 function clearPicked() {
   files.value = [];
@@ -347,11 +302,10 @@ async function upload() {
 
     uploadSummary.value = j;
 
-    // refrescar listado
     page.value = 1;
     await loadList();
+    await loadMapAll();
 
-    // limpiar selector
     clearPicked();
   } catch (e) {
     uploadError.value = String(e?.message || e);
@@ -386,8 +340,6 @@ async function loadList() {
     });
 
     const j = await apiFetch(`/api/antennas?${q}`, { method: "GET" });
-
-    // backend puede devolver {rows,total} o {items,total}
     rows.value = j.rows || j.items || [];
     total.value = Number(j.total || 0);
   } catch (e) {
@@ -402,11 +354,13 @@ async function loadList() {
 function applyFilters() {
   page.value = 1;
   loadList();
+  loadMapAll();
 }
 function resetFilters() {
   filters.value = { operator: "", technology: "", departamento: "", municipio: "", q: "" };
   page.value = 1;
   loadList();
+  loadMapAll();
 }
 
 const maxPage = computed(() => Math.max(1, Math.ceil((total.value || 0) / limit.value)));
@@ -420,23 +374,78 @@ function nextPage() {
   loadList();
 }
 
-/** Mapa: solo puntos válidos (lat/lon num) */
+function makeKey(r){
+  const op = String(r?.operator ?? "-");
+  const cell = String(r?.cell_id ?? r?.antenna_id ?? "?");
+  const name = String(r?.cell_name ?? r?.bts_name ?? r?.site_name ?? "");
+  return `${op}::${cell}::${name}`;
+}
+
+const mapPoints = computed(() => (mapRows.value || []).slice(0, mapMax));
+
 function toNum(v){
   if (v == null) return null;
   const n = Number(String(v).trim().replace(",", "."));
   return Number.isFinite(n) ? n : null;
 }
-const mapPoints = computed(() => {
-  const pts = [];
-  for (const r of rows.value || []) {
-    const lat = toNum(r.lat);
-    const lon = toNum(r.lon);
-    if (lat == null || lon == null) continue;
-    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) continue;
-    pts.push({ ...r, lat, lon });
+function isValidLatLon(lat, lon){
+  if (lat == null || lon == null) return false;
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return false;
+  if (Math.abs(lat) < 1e-9 && Math.abs(lon) < 1e-9) return false;
+  return true;
+}
+
+async function loadMapAll(){
+  mapError.value = "";
+  mapLoading.value = true;
+  mapRows.value = [];
+
+  try {
+    const per = 25;
+    let p = 1;
+    let pages = 1;
+    let validCount = 0;
+    const maxRequests = 80;
+
+    while (p <= pages && validCount < mapMax && p <= maxRequests) {
+      const q = qs({
+        operator: filters.value.operator,
+        technology: filters.value.technology,
+        departamento: filters.value.departamento,
+        municipio: filters.value.municipio,
+        q: filters.value.q,
+        page: String(p),
+        limit: String(per),
+        active: "1",
+      });
+
+      const j = await apiFetch(`/api/antennas?${q}`, { method: "GET" });
+      const batch = j.rows || j.items || [];
+
+      if (p === 1) {
+        const tt = Number(j.total || 0);
+        pages = Math.max(1, Math.ceil(tt / per));
+      }
+
+      for (const r of batch) {
+        const lat = toNum(r.lat);
+        const lon = toNum(r.lon);
+        if (!isValidLatLon(lat, lon)) continue;
+        mapRows.value.push({ ...r, lat, lon });
+        validCount++;
+        if (validCount >= mapMax) break;
+      }
+
+      p++;
+      if (!batch.length) break;
+    }
+  } catch (e) {
+    mapError.value = String(e?.message || e);
+    mapRows.value = [];
+  } finally {
+    mapLoading.value = false;
   }
-  return pts.slice(0, mapMax);
-});
+}
 
 const mapSubtitle = computed(() => {
   const f = filters.value;
@@ -452,6 +461,11 @@ const mapSubtitle = computed(() => {
 function openMap() {
   showMapBig.value = true;
 }
+
+onMounted(() => {
+  loadList();
+  loadMapAll();
+});
 </script>
 
 <style scoped>
@@ -569,19 +583,6 @@ button:disabled{ opacity:.55; cursor:not-allowed; }
 .kLabel{ font-size: 12px; color: var(--muted); }
 .kVal{ font-size: 20px; font-weight: 900; margin-top: 4px; }
 
-.mapPreview{
-  margin-top: 10px;
-  border-radius: 14px;
-  overflow:hidden;
-  border: 1px solid rgba(255,255,255,.10);
-}
-.hintMini{
-  padding: 10px 12px;
-  font-size: 12px;
-  color: var(--muted);
-  border-top: 1px solid rgba(255,255,255,.08);
-  background: rgba(255,255,255,.04);
-}
 .warn{
   margin-top: 10px;
   padding: 10px;
@@ -608,19 +609,6 @@ button:disabled{ opacity:.55; cursor:not-allowed; }
 .titleRow{ display:flex; align-items:baseline; gap: 10px; }
 .pager{ display:flex; align-items:center; gap: 10px; }
 
-.tableWrap{ overflow:auto; }
-table{
-  width: 100%;
-  border-collapse: collapse;
-  min-width: 1600px;
-}
-th, td{
-  padding: 10px 10px;
-  border-bottom: 1px solid rgba(255,255,255,.06);
-  text-align: left;
-  font-size: 13px;
-}
-th{ color: var(--muted); font-weight: 900; }
 .empty{ padding: 16px; text-align:center; color: var(--muted); }
 
 .error{
@@ -630,6 +618,45 @@ th{ color: var(--muted); font-weight: 900; }
   border: 1px solid rgba(251,113,133,.35);
   background: rgba(251,113,133,.10);
 }
+
+.resultList{
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.resultItem{
+  padding: 12px;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+  cursor: default;
+}
+.resultItem:hover{
+  background: rgba(255,255,255,.06);
+}
+.rTop{
+  display:flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+.rMain{ font-weight: 900; }
+.rCoords{ opacity:.9; }
+.rMid{
+  margin-top: 6px;
+  display:flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.rBot{ margin-top: 4px; }
+
+.mapEmbed{
+  margin-top: 10px;
+  border-radius: 14px;
+  overflow:hidden;
+  border: 1px solid rgba(255,255,255,.10);
+  height: 420px;
+}
+.mapEmbed :deep(.embedWrap){ height: 100%; }
+.mapEmbed :deep(.map){ height: 100%; }
+
 @media (max-width: 980px){
   .grid{ grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .grid2{ grid-template-columns: repeat(2, minmax(0, 1fr)); }

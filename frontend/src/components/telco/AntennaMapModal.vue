@@ -1,5 +1,6 @@
+<!-- AntennaMapModal.vue -->
 <template>
-  <div class="backdrop" @click.self="close">
+  <div v-if="!embedded" class="backdrop" @click.self="close">
     <div ref="modalEl" class="modal">
       <div class="head">
         <div>
@@ -11,7 +12,7 @@
 
       <div ref="viewEl" class="map"></div>
 
-      <div class="tableWrap" v-if="open && normalized.length">
+      <div class="tableWrap" v-if="open && showTable && normalized.length">
         <table class="miniTable">
           <thead>
             <tr>
@@ -47,10 +48,21 @@
         </table>
       </div>
 
-      <div class="warn" v-if="open && normalized.length === 0">
+      <div class="warn" v-if="open && showTable && normalized.length === 0">
         No hay antenas con lat/lon válidos en este resultado.
       </div>
     </div>
+  </div>
+
+  <div v-else ref="modalEl" class="embedWrap">
+    <div class="embedHead">
+      <div>
+        <div class="title">Mapa</div>
+        <div class="sub">{{ subtitle }}</div>
+      </div>
+      <div class="pill">{{ normalized.length }} pts</div>
+    </div>
+    <div ref="viewEl" class="map embedMap"></div>
   </div>
 </template>
 
@@ -68,7 +80,6 @@ import Point from "@arcgis/core/geometry/Point";
 import Extent from "@arcgis/core/geometry/Extent";
 
 import BasemapGallery from "@arcgis/core/widgets/BasemapGallery";
-import Expand from "@arcgis/core/widgets/Expand";
 import Compass from "@arcgis/core/widgets/Compass";
 import ScaleBar from "@arcgis/core/widgets/ScaleBar";
 
@@ -77,6 +88,10 @@ const props = defineProps({
   points: { type: Array, default: () => [] },
   maxPoints: { type: Number, default: 1500 },
   subtitle: { type: String, default: "" },
+  embedded: { type: Boolean, default: false },
+  showTable: { type: Boolean, default: true },
+  hoverKey: { type: String, default: null },
+  panOnHover: { type: Boolean, default: true },
 });
 const emit = defineEmits(["close"]);
 
@@ -87,7 +102,9 @@ let view = null;
 let gl = null;
 
 let basemapGallery = null;
-let basemapExpand = null;
+let basemapBtn = null;
+let basemapPanel = null;
+let onViewClickHandle = null;
 let compass = null;
 let scaleBar = null;
 let ro = null;
@@ -97,7 +114,6 @@ let hoveredKey = null;
 
 function close(){ emit("close"); }
 
-// helpers
 function toNum(v){
   if (v == null) return null;
   const s = String(v).trim().replace(",", ".");
@@ -111,7 +127,7 @@ function isValidLatLon(lat, lon){
   return lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
 }
 function rowKey(r){
-  return `${r.operator || "-"}::${r.cell_id || r.antenna_id || "?"}::${r.lac_tac || "?"}::${r.lat || "?"}::${r.lon || "?"}`;
+  return `${r.operator || "-"}::${r.cell_id || r.antenna_id || "?"}::${r.cell_name || r.bts_name || r.site_name || ""}`;
 }
 
 const normalized = computed(() => {
@@ -131,15 +147,21 @@ function destroy() {
   try { ro?.disconnect(); } catch {}
   ro = null;
 
-  try { basemapExpand?.destroy(); } catch {}
   try { basemapGallery?.destroy(); } catch {}
   try { compass?.destroy(); } catch {}
   try { scaleBar?.destroy(); } catch {}
 
-  basemapExpand = null;
   basemapGallery = null;
   compass = null;
   scaleBar = null;
+
+  try { onViewClickHandle?.remove?.(); } catch {}
+  onViewClickHandle = null;
+
+  try { if (view && basemapBtn) view.ui.remove(basemapBtn); } catch {}
+  try { if (view && basemapPanel) view.ui.remove(basemapPanel); } catch {}
+  basemapBtn = null;
+  basemapPanel = null;
 
   try { view?.destroy(); } catch {}
   view = null;
@@ -192,17 +214,34 @@ async function init() {
   scaleBar = new ScaleBar({ view, unit: "metric" });
   view.ui.add(scaleBar, "bottom-left");
 
-  basemapGallery = new BasemapGallery({ view });
-  basemapExpand = new Expand({
-    view,
-    content: basemapGallery,
-    expanded: false,
-    group: "top-right",
-    mode: "floating",
-    expandIconClass: "esri-icon-basemap",
-    expandTooltip: "Mapa base",
+  basemapPanel = document.createElement("div");
+  basemapPanel.className = "esri-widget";
+  basemapPanel.style.padding = "8px";
+  basemapPanel.style.background = "rgba(10,14,24,.85)";
+  basemapPanel.style.color = "white";
+  basemapPanel.style.borderRadius = "12px";
+  basemapPanel.style.border = "1px solid rgba(255,255,255,.14)";
+  basemapPanel.style.display = "none";
+  basemapPanel.style.maxHeight = "320px";
+  basemapPanel.style.overflow = "auto";
+
+  basemapBtn = document.createElement("button");
+  basemapBtn.className = "esri-widget--button esri-icon-basemap";
+  basemapBtn.title = "Mapa base";
+  basemapBtn.type = "button";
+  basemapBtn.onclick = () => {
+    if (!basemapPanel) return;
+    basemapPanel.style.display = basemapPanel.style.display === "none" ? "block" : "none";
+  };
+
+  view.ui.add(basemapBtn, "top-right");
+  view.ui.add(basemapPanel, "top-right");
+
+  basemapGallery = new BasemapGallery({ view, container: basemapPanel });
+
+  onViewClickHandle = view.on("click", () => {
+    if (basemapPanel) basemapPanel.style.display = "none";
   });
-  view.ui.add(basemapExpand, "top-right");
 }
 
 function clearGraphics() {
@@ -293,7 +332,11 @@ function draw() {
 
 function highlightRow(r) {
   if (!view) return;
-  const key = rowKey(r);
+  highlightKey(rowKey(r));
+}
+
+function highlightKey(key) {
+  if (!view || !key) return;
 
   if (hoveredKey && hoveredKey !== key) {
     const prev = markerByKey.get(hoveredKey);
@@ -305,7 +348,9 @@ function highlightRow(r) {
   if (!cur) return;
 
   cur.gPoint.symbol = cur.pointSymbolHover;
-  view.goTo({ center: [cur.lon, cur.lat] }, { animate: true, duration: 200 }).catch(() => {});
+  if (props.panOnHover) {
+    view.goTo({ center: [cur.lon, cur.lat] }, { animate: true, duration: 200 }).catch(() => {});
+  }
 }
 
 function clearHighlight() {
@@ -318,7 +363,8 @@ function clearHighlight() {
 watch(
   () => props.open,
   async (isOpen) => {
-    if (!isOpen) { destroy(); return; }
+    const shouldOpen = props.embedded ? true : isOpen;
+    if (!shouldOpen) { destroy(); return; }
 
     await nextTick();
     await new Promise((r) => setTimeout(r, 80));
@@ -336,11 +382,22 @@ watch(
 );
 
 watch(normalized, () => {
-  if (props.open && view) draw();
+  const shouldOpen = props.embedded ? true : props.open;
+  if (shouldOpen && view) draw();
 }, { deep: true });
+
+watch(
+  () => props.hoverKey,
+  (k) => {
+    if (!view) return;
+    if (!k) clearHighlight();
+    else highlightKey(k);
+  }
+);
 
 onBeforeUnmount(() => destroy());
 </script>
+
 
 <style scoped>
 .backdrop, .modal{
