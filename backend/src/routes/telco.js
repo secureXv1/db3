@@ -1,3 +1,4 @@
+// backend/src/routes/telco.js
 import { Router } from "express";
 import multer from "multer";
 import fs from "fs";
@@ -8,7 +9,9 @@ import { readXdrExcel } from "../lib/telco/read_xdr_excel.js";
 
 const router = Router();
 
-// ===== Upload config =====
+// ==============================
+// Upload config
+// ==============================
 const UPLOAD_DIR = path.resolve("uploads_telco");
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -22,7 +25,16 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
-// ===== Helpers SQL =====
+// ==============================
+// Helpers (bulk insert)
+// ==============================
+
+/**
+ * Construye VALUES ($1,$2...),($n...) para inserciones masivas.
+ * @param {Array<Array<any>>} rows - Filas ya en el orden exacto de columnas
+ * @param {number} cols - Cantidad de columnas por fila
+ * @param {Array<any>} params - Acumulador de parámetros (se modifica)
+ */
 function buildBulkInsert(rows, cols, params) {
   const chunks = rows.map((r) => {
     const base = params.length;
@@ -33,6 +45,10 @@ function buildBulkInsert(rows, cols, params) {
   return chunks.join(",");
 }
 
+/**
+ * Inserta un batch en call_records_tmp con dedupe por constraint ux_call_dedupe.
+ * IMPORTANTE: los registros deben venir normalizados.
+ */
 async function insertCallBatch(runId, rows) {
   if (!rows?.length) return { inserted: 0, ids: [] };
 
@@ -44,8 +60,8 @@ async function insertCallBatch(runId, rows) {
   const valuesSql = buildBulkInsert(
     rows.map((r) => ([
       runId,
-      r.call_ts,                 // ideal: string "YYYY-MM-DD HH:MM:SS" o ISO
-      r.direction,               // 'IN' | 'OUT'
+      r.call_ts,
+      r.direction,
       r.a_number,
       r.b_number,
       r.duration_sec ?? null,
@@ -59,7 +75,7 @@ async function insertCallBatch(runId, rows) {
       r.nombre_celda_final ?? null,
       r.imsi ?? null,
       r.imei ?? null,
-      JSON.stringify(r.raw ?? {})
+      JSON.stringify(r.raw ?? {}),
     ])),
     17,
     params
@@ -79,6 +95,9 @@ async function insertCallBatch(runId, rows) {
   return { inserted: r.rowCount, ids: r.rows.map((x) => x.id) };
 }
 
+/**
+ * Recalcula hits priorizados para un run (objetivos_priorizados contra tel/imsi/imei).
+ */
 async function refreshPrioritizedHits(runId) {
   // TEL A
   await pool.query(
@@ -133,27 +152,10 @@ async function refreshPrioritizedHits(runId) {
   );
 }
 
-async function getPrimaryTarget(runId) {
-  const r = await pool.query(
-    `
-    SELECT t.target
-    FROM (
-      SELECT
-        CASE WHEN direction='IN' THEN b_number ELSE a_number END AS target,
-        COUNT(*) AS cnt
-      FROM call_records_tmp
-      WHERE run_id = $1
-      GROUP BY 1
-    ) t
-    WHERE t.target IS NOT NULL AND t.target <> ''
-    ORDER BY t.cnt DESC
-    LIMIT 1;
-    `,
-    [runId]
-  );
-  return r.rows[0]?.target || null;
-}
-
+/**
+ * Construye WHERE y params para filtros comunes en call_records_tmp.
+ * - Soporta rango hora (Bogotá) cruzando medianoche.
+ */
 function buildWhereCalls({ runId, from, to, hourFrom, hourTo, dir }, params) {
   const where = [];
   params.push(runId);
@@ -168,13 +170,13 @@ function buildWhereCalls({ runId, from, to, hourFrom, hourTo, dir }, params) {
     where.push(`call_ts <= $${params.length}::timestamptz`);
   }
 
-  // Filtro por dirección (IN/OUT/BOTH)
+  // Dirección (IN/OUT/BOTH)
   if (dir && dir !== "BOTH") {
     params.push(dir);
     where.push(`direction = $${params.length}::call_direction`);
   }
 
-  // Filtro horario (America/Bogota), soporta rangos que cruzan medianoche
+  // Horario (America/Bogota), cruza medianoche si hf > ht
   if (hourFrom != null && hourTo != null) {
     const hf = Number(hourFrom);
     const ht = Number(hourTo);
@@ -188,7 +190,6 @@ function buildWhereCalls({ runId, from, to, hourFrom, hourTo, dir }, params) {
       if (hf <= ht) {
         where.push(`${hourExpr} BETWEEN ${pHf} AND ${pHt}`);
       } else {
-        // Ej: 22 -> 6 (cruza medianoche)
         where.push(`(${hourExpr} >= ${pHf} OR ${hourExpr} <= ${pHt})`);
       }
     }
@@ -197,29 +198,263 @@ function buildWhereCalls({ runId, from, to, hourFrom, hourTo, dir }, params) {
   return where.length ? `WHERE ${where.join(" AND ")}` : "";
 }
 
+/**
+ * Clamp entero para queries.
+ */
 function clampInt(v, def, min, max) {
   const n = Number(v);
   if (!Number.isFinite(n)) return def;
   return Math.max(min, Math.min(max, Math.trunc(n)));
 }
 
+// ==============================
+// Normalización (evita duplicados y permite join con antenas)
+// ==============================
 
+/**
+ * Normaliza teléfono:
+ * - deja solo dígitos
+ * - quita prefijo 57 si queda > 10
+ */
+function normPhone(v) {
+  let s = String(v ?? "").trim();
+  if (!s) return "";
+  s = s.replace(/[^\d+]/g, "").replace(/^\+/, "");
+  if (s.startsWith("57") && s.length > 10) s = s.slice(2);
+  return s;
+}
 
+/**
+ * Normaliza timestamp a "YYYY-MM-DD HH:MM:SS" (string).
+ * readXdrExcel normalmente ya lo entrega así; esto solo asegura segundos.
+ */
+function normTs(v) {
+  const s = String(v ?? "").trim();
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(s)) return `${s}:00`;
+  return s;
+}
 
-// ===== Routes =====
+/**
+ * Normaliza dirección:
+ * - acepta IN/OUT
+ * - si no existe, la infiere desde tipo
+ */
+function normDir(r) {
+  const d = String(r?.direction ?? "").toUpperCase().trim();
+  if (d === "IN" || d === "OUT") return d;
 
-// Crear run
+  const t = String(r?.tipo ?? "").toUpperCase();
+  if (t.includes("SALIENTE")) return "OUT";
+  if (t.includes("ENTRANTE")) return "IN";
+  return "IN";
+}
+
+/**
+ * Normaliza cell id (solo dígitos).
+ * Regla CLARO:
+ * - quita el último dígito para permitir match con tabla antennas.
+ */
+function normCellId(operator, v) {
+  let s = String(v ?? "").trim();
+  if (!s) return null;
+
+  s = s.replace(/[^\d]/g, "");
+  if (!s) return null;
+
+  const op = String(operator ?? "").toUpperCase().trim();
+  if (op === "CLARO" && s.length > 1) {
+    s = s.slice(0, -1);
+  }
+  return s;
+}
+
+/**
+ * Normaliza 1 registro del Excel a la forma correcta para DB (y dedupe).
+ * forcedOperator se aplica si el Excel no trae operador o si quieres forzarlo desde el UI.
+ */
+function normalizeRecord(r, forcedOperator) {
+  const operator = String(r.operator ?? forcedOperator ?? "").toUpperCase().trim() || null;
+
+  return {
+    ...r,
+    operator,
+    call_ts: normTs(r.call_ts),
+    direction: normDir(r),
+    a_number: normPhone(r.a_number),
+    b_number: normPhone(r.b_number),
+    celda_inicio: normCellId(operator, r.celda_inicio),
+    celda_final: normCellId(operator, r.celda_final),
+    lac_inicio: r.lac_inicio ?? null,
+    lac_final: r.lac_final ?? null,
+  };
+}
+
+// ==============================
+// Antennas metadata (dynamic / robust)
+// ==============================
+
+let _antennaMetaCache = null;
+let _postgisCache = null;
+
+/**
+ * Escapa identificadores SQL ("col") de manera segura.
+ */
+function qIdent(name) {
+  return `"${String(name).replace(/"/g, '""')}"`;
+}
+
+/**
+ * Detecta si PostGIS está instalado (para extraer lon/lat desde geom si existe).
+ */
+async function isPostgisEnabled() {
+  if (_postgisCache != null) return _postgisCache;
+  try {
+    const r = await pool.query(`SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname='postgis') AS ok;`);
+    _postgisCache = Boolean(r.rows[0]?.ok);
+  } catch {
+    _postgisCache = false;
+  }
+  return _postgisCache;
+}
+
+/**
+ * Lee columnas disponibles en tabla antennas para armar un JOIN sin romper si cambian nombres.
+ */
+async function getAntennaMeta() {
+  if (_antennaMetaCache) return _antennaMetaCache;
+
+  // Verifica existencia tabla
+  const t = await pool.query(`
+    SELECT EXISTS(
+      SELECT 1 FROM information_schema.tables
+      WHERE table_schema='public' AND table_name='antennas'
+    ) AS ok;
+  `);
+
+  if (!t.rows[0]?.ok) {
+    _antennaMetaCache = { hasTable: false };
+    return _antennaMetaCache;
+  }
+
+  const colsQ = await pool.query(`
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='antennas';
+  `);
+
+  const cols = new Set(colsQ.rows.map((r) => r.column_name));
+
+  const pickFirst = (cands) => cands.find((c) => cols.has(c)) || null;
+
+  const opCol = pickFirst(["operator", "operador", "carrier"]);
+  const keyCol = pickFirst(["antenna", "cell_id", "cellid", "celda", "cell", "cell_key"]);
+  const labelCol = pickFirst(["localidad", "municipio", "ciudad", "nombre_celda", "cell_name", "name", "site_name"]);
+  const latCol = pickFirst(["lat", "latitude", "latitud", "y"]);
+  const lonCol = pickFirst(["lon", "lng", "longitude", "longitud", "x"]);
+  const geomCol = pickFirst(["geom", "geometry", "shape"]);
+
+  const postgis = await isPostgisEnabled();
+
+  _antennaMetaCache = {
+    hasTable: true,
+    opCol,
+    keyCol,
+    labelCol,
+    latCol,
+    lonCol,
+    geomCol,
+    postgis,
+  };
+
+  return _antennaMetaCache;
+}
+
+/**
+ * Construye SELECT/LEFT JOIN para top lugares usando metadata de antennas.
+ * Devuelve { sql, needsJoin } listo para pool.query.
+ */
+async function buildPlacesQuerySQL() {
+  const meta = await getAntennaMeta();
+
+  const canJoin = Boolean(meta.hasTable && meta.opCol && meta.keyCol);
+  const joinSql = canJoin
+    ? `LEFT JOIN antennas a ON a.${qIdent(meta.opCol)} = n.operator AND a.${qIdent(meta.keyCol)} = n.cell_key`
+    : "";
+
+  const labelExpr = canJoin && meta.labelCol
+    ? `COALESCE(a.${qIdent(meta.labelCol)}::text, n.cell_name, 'SIN_DATO')`
+    : `COALESCE(n.cell_name, 'SIN_DATO')`;
+
+  // Lat/Lon: prefer columnas, si no existen intenta geom (solo si PostGIS está)
+  let latExpr = `NULL::double precision`;
+  let lonExpr = `NULL::double precision`;
+
+  if (canJoin && meta.latCol && meta.lonCol) {
+    latExpr = `a.${qIdent(meta.latCol)}::double precision`;
+    lonExpr = `a.${qIdent(meta.lonCol)}::double precision`;
+  } else if (canJoin && meta.postgis && meta.geomCol) {
+    latExpr = `ST_Y(a.${qIdent(meta.geomCol)})::double precision`;
+    lonExpr = `ST_X(a.${qIdent(meta.geomCol)})::double precision`;
+  }
+
+  const sql = `
+    WITH cells AS (
+      SELECT operator, celda_inicio AS cell_id, nombre_celda_inicio AS cell_name
+      FROM call_records_tmp
+      __WHERE__
+      AND celda_inicio IS NOT NULL
+
+      UNION ALL
+
+      SELECT operator, celda_final AS cell_id, nombre_celda_final AS cell_name
+      FROM call_records_tmp
+      __WHERE__
+      AND celda_final IS NOT NULL
+    ),
+    norm AS (
+      SELECT
+        operator,
+        REGEXP_REPLACE(cell_id::text, '[^0-9]', '', 'g') AS cell_key,
+        NULLIF(TRIM(cell_name::text), '') AS cell_name
+      FROM cells
+    )
+    SELECT
+      n.operator,
+      n.cell_key,
+      ${labelExpr} AS lugar,
+      COUNT(*)::bigint AS hits,
+      ${latExpr} AS lat,
+      ${lonExpr} AS lon
+    FROM norm n
+    ${joinSql}
+    WHERE n.cell_key IS NOT NULL AND n.cell_key <> ''
+    GROUP BY n.operator, n.cell_key, lugar, lat, lon
+    ORDER BY hits DESC
+    LIMIT __LIMIT__;
+  `;
+
+  return { sql, canJoin };
+}
+
+// ==============================
+// Routes
+// ==============================
+
+/**
+ * Crear run con nombre (requerido por UI).
+ * Body: { name?: string }
+ */
 router.post("/runs", authRequired, async (req, res) => {
   try {
     const created_by = req.user?.id ?? null;
 
-    // ✅ nombre automático: username + fecha/hora
-    const uname = String(req.user?.username ?? "usuario").trim() || "usuario";
-    const name = `${uname} - ${new Date().toISOString().slice(0,19).replace("T"," ")}`;
+    const name = String(req.body?.name ?? "").trim();
+    const safeName = name || `Analisis ${new Date().toISOString().slice(0, 19).replace("T", " ")}`;
 
     const r = await pool.query(
       `INSERT INTO analysis_runs (created_by, name) VALUES ($1, $2) RETURNING id, created_at, name`,
-      [created_by, name]
+      [created_by, safeName]
     );
 
     res.json({ ok: true, run: r.rows[0] });
@@ -228,16 +463,60 @@ router.post("/runs", authRequired, async (req, res) => {
   }
 });
 
-// Nuevo análisis: borra lo temporal del run
+/**
+ * Obtener run (para recargar UI).
+ */
+router.get("/runs/:runId", authRequired, async (req, res) => {
+  try {
+    const runId = Number(req.params.runId);
+    if (!Number.isFinite(runId)) return res.status(400).json({ ok: false, error: "runId inválido" });
+
+    const r = await pool.query(
+      `SELECT id, created_at, name FROM analysis_runs WHERE id = $1`,
+      [runId]
+    );
+
+    if (!r.rowCount) return res.status(404).json({ ok: false, error: "Run no existe" });
+    res.json({ ok: true, run: r.rows[0] });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+/**
+ * Cambiar nombre de un run (para "Nuevo análisis" sin perder runId).
+ * Body: { name: string }
+ */
+router.patch("/runs/:runId", authRequired, async (req, res) => {
+  try {
+    const runId = Number(req.params.runId);
+    if (!Number.isFinite(runId)) return res.status(400).json({ ok: false, error: "runId inválido" });
+
+    const name = String(req.body?.name ?? "").trim();
+    if (!name) return res.status(400).json({ ok: false, error: "name requerido" });
+
+    const r = await pool.query(
+      `UPDATE analysis_runs SET name = $2 WHERE id = $1 RETURNING id, created_at, name`,
+      [runId, name]
+    );
+
+    if (!r.rowCount) return res.status(404).json({ ok: false, error: "Run no existe" });
+    res.json({ ok: true, run: r.rows[0] });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+/**
+ * Nuevo análisis: borra lo temporal del run (call_records_tmp + prioritized_hits).
+ * (Esta es la lógica que evita que se acumulen y "dupliquen" llamadas entre cargas.)
+ */
 router.delete("/runs/:runId/clear", authRequired, async (req, res) => {
   try {
     const runId = Number(req.params.runId);
     if (!Number.isFinite(runId)) return res.status(400).json({ ok: false, error: "runId inválido" });
 
-    // OJO: prioritized_hits se borra solo por cascade al borrar call_records_tmp
     const del = await pool.query(`DELETE FROM call_records_tmp WHERE run_id = $1`, [runId]);
-
-    // (opcional de seguridad)
     await pool.query(`DELETE FROM prioritized_hits WHERE run_id = $1`, [runId]);
 
     res.json({ ok: true, deleted: del.rowCount });
@@ -246,11 +525,18 @@ router.delete("/runs/:runId/clear", authRequired, async (req, res) => {
   }
 });
 
-// Upload XDR Excel(s)
+/**
+ * Upload XDR Excel(s)
+ * Query: ?operator=CLARO|MOVISTAR|TIGO|WOM|OTRO
+ * - Normaliza todo antes de insertar (evita duplicados falsos).
+ * - Regla CLARO aplicada sobre celdas (quita último dígito) antes de guardar.
+ */
 router.post("/runs/:runId/upload-xdr", authRequired, upload.array("files", 20), async (req, res) => {
   try {
     const runId = Number(req.params.runId);
     if (!Number.isFinite(runId)) return res.status(400).json({ ok: false, error: "runId inválido" });
+
+    const forcedOperator = String(req.query.operator ?? "").toUpperCase().trim() || null;
 
     const files = req.files || [];
     if (!files.length) return res.status(400).json({ ok: false, error: "No llegaron archivos" });
@@ -262,12 +548,14 @@ router.post("/runs/:runId/upload-xdr", authRequired, upload.array("files", 20), 
       const { records } = readXdrExcel(f.path);
       seen += records.length;
 
+      const normalized = records.map((r) => normalizeRecord(r, forcedOperator));
+
       // batch insert
       const B = 3000;
       let fileInserted = 0;
 
-      for (let i = 0; i < records.length; i += B) {
-        const chunk = records.slice(i, i + B);
+      for (let i = 0; i < normalized.length; i += B) {
+        const chunk = normalized.slice(i, i + B);
         const r = await insertCallBatch(runId, chunk);
         fileInserted += r.inserted;
       }
@@ -278,10 +566,9 @@ router.post("/runs/:runId/upload-xdr", authRequired, upload.array("files", 20), 
         file: f.originalname,
         rows_seen: records.length,
         rows_inserted: fileInserted,
-        rows_omitted: records.length - fileInserted
+        rows_omitted: records.length - fileInserted,
       });
 
-      // limpia archivo del disco (para que no se acumulen)
       try { fs.unlinkSync(f.path); } catch {}
     }
 
@@ -296,54 +583,21 @@ router.post("/runs/:runId/upload-xdr", authRequired, upload.array("files", 20), 
     res.json({
       ok: true,
       runId,
+      operator: forcedOperator,
       rows_seen: seen,
       rows_inserted: inserted,
       rows_omitted: seen - inserted,
       prioritized_hits: Number(hits.rows[0]?.hits || 0),
-      results: perFile
+      results: perFile,
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
   }
 });
 
-// Objetivo automático (top 10 y principal)
-router.get("/runs/:runId/target", authRequired, async (req, res) => {
-  try {
-    const runId = Number(req.params.runId);
-    if (!Number.isFinite(runId)) return res.status(400).json({ ok: false, error: "runId inválido" });
-
-    const top = await pool.query(
-      `
-      SELECT t.target, t.cnt
-      FROM (
-        SELECT
-          CASE WHEN direction='IN' THEN b_number ELSE a_number END AS target,
-          COUNT(*) AS cnt
-        FROM call_records_tmp
-        WHERE run_id = $1
-        GROUP BY 1
-      ) t
-      WHERE t.target IS NOT NULL AND t.target <> ''
-      ORDER BY t.cnt DESC
-      LIMIT 10;
-      `,
-      [runId]
-    );
-
-    const primary = top.rows[0] || null;
-
-    res.json({
-      ok: true,
-      primaryTarget: primary?.target || null,
-      primaryCount: primary?.cnt || 0,
-      topTargets: top.rows
-    });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e.message || e) });
-  }
-});
-
+/**
+ * Summary: KPIs + top enlaces (A->B) según filtros.
+ */
 router.get("/runs/:runId/flows/summary", authRequired, async (req, res) => {
   try {
     const runId = Number(req.params.runId);
@@ -352,10 +606,7 @@ router.get("/runs/:runId/flows/summary", authRequired, async (req, res) => {
     const { from = null, to = null, dir = "BOTH", hour_from = null, hour_to = null } = req.query;
 
     const params = [];
-    const where = buildWhereCalls(
-      { runId, from, to, dir, hourFrom: hour_from, hourTo: hour_to },
-      params
-    );
+    const where = buildWhereCalls({ runId, from, to, dir, hourFrom: hour_from, hourTo: hour_to }, params);
 
     const kpi = await pool.query(
       `
@@ -372,7 +623,6 @@ router.get("/runs/:runId/flows/summary", authRequired, async (req, res) => {
       params
     );
 
-    // Top enlaces dirigidos (A->B)
     const topEdges = await pool.query(
       `
       SELECT
@@ -395,85 +645,16 @@ router.get("/runs/:runId/flows/summary", authRequired, async (req, res) => {
       ok: true,
       filters: { from, to, dir, hour_from, hour_to },
       kpis: kpi.rows[0],
-      top_edges: topEdges.rows
+      top_edges: topEdges.rows,
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
   }
 });
 
-router.get("/runs/:runId/flows/graph", authRequired, async (req, res) => {
-  try {
-    const runId = Number(req.params.runId);
-    if (!Number.isFinite(runId)) return res.status(400).json({ ok: false, error: "runId inválido" });
-
-    const {
-      from = null,
-      to = null,
-      dir = "BOTH",
-      hour_from = null,
-      hour_to = null,
-      min_calls = 2,
-      max_edges = 600,
-      max_nodes = 250
-    } = req.query;
-
-    const MIN_CALLS = clampInt(min_calls, 2, 1, 999999);
-    const MAX_EDGES = clampInt(max_edges, 600, 50, 5000);
-    const MAX_NODES = clampInt(max_nodes, 250, 20, 2000);
-
-    const params = [];
-    const where = buildWhereCalls(
-      { runId, from, to, dir, hourFrom: hour_from, hourTo: hour_to },
-      params
-    );
-
-    // 1) Edges agregados (dirigidos)
-    params.push(MIN_CALLS, MAX_EDGES);
-    const edgesQ = await pool.query(
-      `
-      WITH e AS (
-        SELECT
-          a_number AS source,
-          b_number AS target,
-          COUNT(*)::bigint AS calls,
-          COALESCE(SUM(duration_sec),0)::bigint AS total_duration,
-          MIN(call_ts) AS first_ts,
-          MAX(call_ts) AS last_ts
-        FROM call_records_tmp
-        ${where}
-        GROUP BY a_number, b_number
-        HAVING COUNT(*) >= $${params.length - 1}
-        ORDER BY calls DESC
-        LIMIT $${params.length}
-      )
-      SELECT * FROM e;
-      `,
-      params
-    );
-
-    const edges = edgesQ.rows;
-
-    // 2) Nodes: los que aparecen en edges (limit)
-    const nodeSet = new Set();
-    for (const e of edges) {
-      nodeSet.add(e.source);
-      nodeSet.add(e.target);
-      if (nodeSet.size >= MAX_NODES) break;
-    }
-    const nodes = Array.from(nodeSet).map((id) => ({ id, label: id }));
-
-    res.json({
-      ok: true,
-      filters: { from, to, dir, hour_from, hour_to, min_calls: MIN_CALLS },
-      nodes,
-      edges
-    });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e.message || e) });
-  }
-});
-
+/**
+ * Timeline: lista eventos según filtros.
+ */
 router.get("/runs/:runId/flows/timeline", authRequired, async (req, res) => {
   try {
     const runId = Number(req.params.runId);
@@ -485,16 +666,13 @@ router.get("/runs/:runId/flows/timeline", authRequired, async (req, res) => {
       dir = "BOTH",
       hour_from = null,
       hour_to = null,
-      limit = 2000
+      limit = 2000,
     } = req.query;
 
     const LIMIT = clampInt(limit, 2000, 50, 20000);
 
     const params = [];
-    const where = buildWhereCalls(
-      { runId, from, to, dir, hourFrom: hour_from, hourTo: hour_to },
-      params
-    );
+    const where = buildWhereCalls({ runId, from, to, dir, hourFrom: hour_from, hourTo: hour_to }, params);
 
     params.push(LIMIT);
 
@@ -507,6 +685,7 @@ router.get("/runs/:runId/flows/timeline", authRequired, async (req, res) => {
         a_number,
         b_number,
         duration_sec,
+        operator,
         lac_inicio,
         celda_inicio,
         nombre_celda_inicio,
@@ -524,8 +703,57 @@ router.get("/runs/:runId/flows/timeline", authRequired, async (req, res) => {
     res.json({
       ok: true,
       filters: { from, to, dir, hour_from, hour_to, limit: LIMIT },
-      rows: q.rows
+      rows: q.rows,
     });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+/**
+ * Top lugares: cruza celdas con antennas (si existe) y devuelve hits + lat/lon.
+ * Query:
+ * - phone (opcional) filtra por objetivo (a_number o b_number)
+ */
+router.get("/runs/:runId/places/top", authRequired, async (req, res) => {
+  try {
+    const runId = Number(req.params.runId);
+    if (!Number.isFinite(runId)) return res.status(400).json({ ok: false, error: "runId inválido" });
+
+    const {
+      from = null,
+      to = null,
+      dir = "BOTH",
+      hour_from = null,
+      hour_to = null,
+      phone = null,
+      limit = 12,
+    } = req.query;
+
+    const LIMIT = clampInt(limit, 12, 5, 50);
+
+    const params = [];
+    let where = buildWhereCalls({ runId, from, to, dir, hourFrom: hour_from, hourTo: hour_to }, params);
+
+    // Filtro por objetivo (si viene)
+    if (phone) {
+      const p = normPhone(phone);
+      params.push(p);
+      const cond = `(a_number = $${params.length} OR b_number = $${params.length})`;
+      where = where ? `${where} AND ${cond}` : `WHERE run_id = $1 AND ${cond}`;
+    }
+
+    const { sql } = await buildPlacesQuerySQL();
+
+    // Reutiliza el mismo WHERE en ambos SELECT del CTE "cells"
+    const finalSql = sql
+      .replaceAll("__WHERE__", where || "WHERE run_id = $1")
+      .replaceAll("__LIMIT__", `$${params.length + 1}`);
+
+    params.push(LIMIT);
+
+    const q = await pool.query(finalSql, params);
+    res.json({ ok: true, rows: q.rows });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
   }
