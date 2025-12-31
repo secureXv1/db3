@@ -274,14 +274,17 @@ function applyScopeFilters({ whereSql, params, phone, group }) {
   }
 
   // Filtro por objetivo (si viene)
+  // IMPORTANTE: comparamos como TEXT para que funcione si a_number/b_number son BIGINT o TEXT
   if (phone) {
     const p = normPhone(phone);
     params.push(p);
-    where += ` AND (a_number = $${params.length} OR b_number = $${params.length})`;
+    const idx = params.length;
+    where += ` AND (a_number::text = $${idx} OR b_number::text = $${idx})`;
   }
 
   return { where, params };
 }
+
 
 function parseGroup(v) {
   const g = Number(v);
@@ -1080,65 +1083,27 @@ router.get("/runs/:runId/group/common-contacts", authRequired, async (req, res) 
     const group1 = parseGroup(req.query.group1);
     const group2 = parseGroup(req.query.group2);
 
-    const limit = clampInt(req.query.limit, 20, 5, 100);
-
+    const limit = clampInt(req.query.limit, 20, 5, 200);
     const { from = null, to = null, dir = "BOTH", hour_from = null, hour_to = null } = req.query;
 
-    // C1
+    // Scope para phone1 (group1)
     const p1 = [];
     let w1 = buildWhereCalls({ runId, from, to, dir, hourFrom: hour_from, hourTo: hour_to }, p1);
     ({ where: w1 } = applyScopeFilters({ whereSql: w1, params: p1, phone: phone1, group: group1 }));
+    // phone1 quedó como último parámetro
+    const pObj1 = `$${p1.length}`;
 
-    // C2
+    // Scope para phone2 (group2)
     const p2 = [];
     let w2 = buildWhereCalls({ runId, from, to, dir, hourFrom: hour_from, hourTo: hour_to }, p2);
     ({ where: w2 } = applyScopeFilters({ whereSql: w2, params: p2, phone: phone2, group: group2 }));
+    const pObj2 = `$${p2.length}`;
 
-    // Intersección en SQL:
-    // - contactos(phoneX) = CASE when a=phone then b else a
-    // - unimos por other
-    const q = await pool.query(
-      `
-      WITH c1 AS (
-        SELECT
-          CASE WHEN a_number = $1 THEN b_number ELSE a_number END AS other,
-          COUNT(*)::bigint AS calls1
-        FROM call_records_tmp
-        ${w1}
-        GROUP BY 1
-      ),
-      c2 AS (
-        SELECT
-          CASE WHEN a_number = $2 THEN b_number ELSE a_number END AS other,
-          COUNT(*)::bigint AS calls2
-        FROM call_records_tmp
-        ${w2}
-        GROUP BY 1
-      )
-      SELECT
-        c1.other,
-        c1.calls1,
-        c2.calls2,
-        (c1.calls1 + c2.calls2)::bigint AS total_calls
-      FROM c1
-      JOIN c2 ON c2.other = c1.other
-      WHERE c1.other IS NOT NULL AND c1.other <> '' AND c1.other <> $1 AND c1.other <> $2
-      ORDER BY total_calls DESC
-      LIMIT $3;
-      `,
-      [phone1, phone2, limit, ...p1, ...p2] // (nota: phone1/phone2 están fuera, pero w1/w2 ya incluyen params propios)
-    );
-
-    // OJO: el query anterior mezcla params; para evitar confusión, lo resolvemos con un query seguro separado:
-    // -> Para mantener estabilidad, devolvemos resultado con una estrategia más simple y segura:
-    // En vez de forzar reuse, hacemos dos queries y cruzamos en JS si tu dataset no es gigante.
-    // Pero aquí ya estás en producción: dejamos el query “seguro” real abajo.
-
-    // --- Implementación segura real (dos consultas + cruce) ---
+    // Contactos objetivo 1 (TODO en TEXT)
     const c1q = await pool.query(
       `
       WITH base AS (
-        SELECT a_number, b_number
+        SELECT a_number::text AS a, b_number::text AS b
         FROM call_records_tmp
         ${w1}
       )
@@ -1146,19 +1111,21 @@ router.get("/runs/:runId/group/common-contacts", authRequired, async (req, res) 
         other,
         COUNT(*)::bigint AS calls
       FROM (
-        SELECT CASE WHEN a_number = $${p1.length} THEN b_number ELSE a_number END AS other
+        SELECT
+          CASE WHEN a = ${pObj1} THEN b ELSE a END AS other
         FROM base
       ) x
-      WHERE other IS NOT NULL AND other <> '' AND other <> $${p1.length}
+      WHERE other IS NOT NULL AND other <> '' AND other <> ${pObj1}
       GROUP BY other;
       `,
       p1
     );
 
+    // Contactos objetivo 2 (TODO en TEXT)
     const c2q = await pool.query(
       `
       WITH base AS (
-        SELECT a_number, b_number
+        SELECT a_number::text AS a, b_number::text AS b
         FROM call_records_tmp
         ${w2}
       )
@@ -1166,15 +1133,17 @@ router.get("/runs/:runId/group/common-contacts", authRequired, async (req, res) 
         other,
         COUNT(*)::bigint AS calls
       FROM (
-        SELECT CASE WHEN a_number = $${p2.length} THEN b_number ELSE a_number END AS other
+        SELECT
+          CASE WHEN a = ${pObj2} THEN b ELSE a END AS other
         FROM base
       ) x
-      WHERE other IS NOT NULL AND other <> '' AND other <> $${p2.length}
+      WHERE other IS NOT NULL AND other <> '' AND other <> ${pObj2}
       GROUP BY other;
       `,
       p2
     );
 
+    // Cruce en JS (intersección)
     const m1 = new Map(c1q.rows.map((r) => [String(r.other), Number(r.calls || 0)]));
     const m2 = new Map(c2q.rows.map((r) => [String(r.other), Number(r.calls || 0)]));
 
@@ -1278,89 +1247,150 @@ router.get("/runs/:runId/group/coincidences", authRequired, async (req, res) => 
     const windowHours = Number(req.query.window_hours ?? 3);
     const windowSec = (Number.isFinite(windowHours) ? windowHours : 3) * 3600;
 
-    const limit = clampInt(req.query.limit, 200, 50, 2000);
+    const limit = clampInt(req.query.limit, 250, 50, 5000);
+    const maxEvents = clampInt(req.query.max_events, 12000, 2000, 30000); // cap de seguridad
 
     const { from = null, to = null, dir = "BOTH", hour_from = null, hour_to = null } = req.query;
 
-    // Base scope para cada phone + group
+    // ---------
+    // Query OBJ1
+    // ---------
     const p1 = [];
     let w1 = buildWhereCalls({ runId, from, to, dir, hourFrom: hour_from, hourTo: hour_to }, p1);
     ({ where: w1 } = applyScopeFilters({ whereSql: w1, params: p1, phone: phone1, group: group1 }));
 
+    const q1 = await pool.query(
+      `
+      WITH e AS (
+        SELECT operator,
+               REGEXP_REPLACE(COALESCE(celda_inicio::text,''), '[^0-9]', '', 'g') AS cell_key,
+               call_ts AS ts
+        FROM call_records_tmp
+        ${w1}
+        AND celda_inicio IS NOT NULL
+
+        UNION ALL
+
+        SELECT operator,
+               REGEXP_REPLACE(COALESCE(celda_final::text,''), '[^0-9]', '', 'g') AS cell_key,
+               call_ts AS ts
+        FROM call_records_tmp
+        ${w1}
+        AND celda_final IS NOT NULL
+      )
+      SELECT operator, cell_key, ts
+      FROM e
+      WHERE cell_key IS NOT NULL AND cell_key <> ''
+      ORDER BY ts ASC
+      LIMIT $${p1.length + 1};
+      `,
+      [...p1, maxEvents]
+    );
+
+    // ---------
+    // Query OBJ2
+    // ---------
     const p2 = [];
     let w2 = buildWhereCalls({ runId, from, to, dir, hourFrom: hour_from, hourTo: hour_to }, p2);
     ({ where: w2 } = applyScopeFilters({ whereSql: w2, params: p2, phone: phone2, group: group2 }));
 
-    // Construimos eventos por celda (inicio + final) y hacemos join por cell_key
-    // + condición de diferencia <= windowSec
-    const q = await pool.query(
+    const q2 = await pool.query(
       `
-      WITH e1 AS (
-        SELECT
-          operator,
-          REGEXP_REPLACE(COALESCE(celda_inicio::text,''), '[^0-9]', '', 'g') AS cell_key,
-          call_ts AS ts,
-          a_number, b_number
-        FROM call_records_tmp
-        ${w1}
-        AND celda_inicio IS NOT NULL
-
-        UNION ALL
-
-        SELECT
-          operator,
-          REGEXP_REPLACE(COALESCE(celda_final::text,''), '[^0-9]', '', 'g') AS cell_key,
-          call_ts AS ts,
-          a_number, b_number
-        FROM call_records_tmp
-        ${w1}
-        AND celda_final IS NOT NULL
-      ),
-      e2 AS (
-        SELECT
-          operator,
-          REGEXP_REPLACE(COALESCE(celda_inicio::text,''), '[^0-9]', '', 'g') AS cell_key,
-          call_ts AS ts,
-          a_number, b_number
+      WITH e AS (
+        SELECT operator,
+               REGEXP_REPLACE(COALESCE(celda_inicio::text,''), '[^0-9]', '', 'g') AS cell_key,
+               call_ts AS ts
         FROM call_records_tmp
         ${w2}
         AND celda_inicio IS NOT NULL
 
         UNION ALL
 
-        SELECT
-          operator,
-          REGEXP_REPLACE(COALESCE(celda_final::text,''), '[^0-9]', '', 'g') AS cell_key,
-          call_ts AS ts,
-          a_number, b_number
+        SELECT operator,
+               REGEXP_REPLACE(COALESCE(celda_final::text,''), '[^0-9]', '', 'g') AS cell_key,
+               call_ts AS ts
         FROM call_records_tmp
         ${w2}
         AND celda_final IS NOT NULL
       )
-      SELECT
-        e1.operator,
-        e1.cell_key,
-        e1.ts AS ts1,
-        e2.ts AS ts2,
-        ABS(EXTRACT(EPOCH FROM (e1.ts - e2.ts)))::bigint AS delta_sec
-      FROM e1
-      JOIN e2
-        ON e2.operator = e1.operator
-       AND e2.cell_key = e1.cell_key
-      WHERE e1.cell_key IS NOT NULL AND e1.cell_key <> ''
-        AND ABS(EXTRACT(EPOCH FROM (e1.ts - e2.ts))) <= $1
-      ORDER BY delta_sec ASC
-      LIMIT $2;
+      SELECT operator, cell_key, ts
+      FROM e
+      WHERE cell_key IS NOT NULL AND cell_key <> ''
+      ORDER BY ts ASC
+      LIMIT $${p2.length + 1};
       `,
-      [windowSec, limit, ...p1, ...p2]
+      [...p2, maxEvents]
     );
 
-    res.json({ ok: true, window_hours: windowHours, rows: q.rows });
+    // -------------------------
+    // Cruce por (operator, cell_key) con dos punteros
+    // -------------------------
+    const map1 = new Map(); // key -> [ts(ms), ...]
+    for (const r of q1.rows) {
+      const key = `${r.operator || ""}:${r.cell_key}`;
+      const t = new Date(r.ts).getTime();
+      if (!Number.isFinite(t)) continue;
+      if (!map1.has(key)) map1.set(key, []);
+      map1.get(key).push(t);
+    }
+
+    const map2 = new Map();
+    for (const r of q2.rows) {
+      const key = `${r.operator || ""}:${r.cell_key}`;
+      const t = new Date(r.ts).getTime();
+      if (!Number.isFinite(t)) continue;
+      if (!map2.has(key)) map2.set(key, []);
+      map2.get(key).push(t);
+    }
+
+    const results = [];
+    const winMs = windowSec * 1000;
+
+    for (const [key, arr1] of map1.entries()) {
+      const arr2 = map2.get(key);
+      if (!arr2?.length) continue;
+
+      // ambas ya vienen ordenadas por ts (pero por seguridad)
+      arr1.sort((a, b) => a - b);
+      arr2.sort((a, b) => a - b);
+
+      let i = 0, j = 0;
+      while (i < arr1.length && j < arr2.length) {
+        const t1 = arr1[i];
+        const t2 = arr2[j];
+        const delta = Math.abs(t1 - t2);
+
+        if (delta <= winMs) {
+          const [operator, cell_key] = key.split(":");
+          results.push({
+            operator,
+            cell_key,
+            ts1: new Date(t1).toISOString(),
+            ts2: new Date(t2).toISOString(),
+            delta_sec: Math.round(delta / 1000),
+          });
+
+          // avanzamos el que está más atrás para buscar otra posible coincidencia cercana
+          if (t1 <= t2) i++;
+          else j++;
+
+          if (results.length >= limit * 4) break; // corte preventivo
+        } else {
+          // mueve el puntero del menor para acercarse
+          if (t1 < t2) i++;
+          else j++;
+        }
+      }
+    }
+
+    // ordenamos por delta y recortamos a limit
+    results.sort((a, b) => (a.delta_sec || 0) - (b.delta_sec || 0));
+
+    res.json({ ok: true, window_hours: windowHours, rows: results.slice(0, limit) });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
   }
 });
-
 /**
  * -----------------------------
  * REPORTE PDF
