@@ -163,6 +163,13 @@
             <span class="muted small"> · filas:</span>
             <b>{{ objectiveInfo.total_rows }}</b>
           </div>
+          <div class="rowInline" style="gap:8px; margin-top:10px" v-if="objectiveInfo?.phone || objectiveManual">
+            <button class="primary" @click="runIndividualAnalysis()" :disabled="loading || !runId">
+              {{ loading ? "Analizando..." : "Generar análisis" }}
+            </button>
+            <button class="ghost" @click="resetFiltersSmart" :disabled="loading">Rango completo</button>
+          </div>
+
 
           <!-- Override manual (por si un caso raro falla detección) -->
           <div class="grid" v-if="uploadSummary">
@@ -197,65 +204,30 @@
           <div class="error" v-if="uploadError">{{ uploadError }}</div>
         </div>
 
-        <!-- Filtros -->
-        <div class="card" v-if="uploadSummary">
+        <!-- Paso siguiente: generar análisis (se habilita tras detectar el objetivo) -->
+        <div class="card" v-if="uploadSummary && !smartReady">
           <div class="cardHead">
             <div>
-              <div class="title">Filtros</div>
-              <div class="muted small">Aplican a resumen, timeline, lugares, contactos y mapa.</div>
+              <div class="title">Siguiente paso: Generar análisis</div>
+              <div class="muted small">
+                Ya cargaste archivos. Ahora genera el análisis para ver rutina diaria, línea de tiempo y grafo tipo i2.
+              </div>
             </div>
-
             <div class="actions">
               <button class="primary" @click="runIndividualAnalysis()" :disabled="loading || !runId">
                 {{ loading ? "Analizando..." : "Generar análisis" }}
               </button>
-              <button class="ghost" @click="resetFilters" :disabled="loading">Limpiar filtros</button>
-              <button class="ghost" @click="downloadReportIndividual" :disabled="loading || !readyForReport">
-                Descargar informe (PDF)
-              </button>
+              <button class="ghost" @click="resetFiltersSmart" :disabled="loading">Rango completo</button>
             </div>
           </div>
 
-          <div class="grid">
-            <div class="field">
-              <label>Desde</label>
-              <input v-model="filters.from" type="datetime-local" />
-            </div>
+          <div class="warn" v-if="!objectiveInfo?.phone && !objectiveManual">
+            No se pudo detectar el número objetivo. Escribe el objetivo en “Objetivo (manual opcional)” y vuelve a generar.
+          </div>
 
-            <div class="field">
-              <label>Hasta</label>
-              <input v-model="filters.to" type="datetime-local" />
-            </div>
-
-            <div class="field">
-              <label>Dirección</label>
-              <select v-model="filters.dir">
-                <option value="BOTH">Ambas</option>
-                <option value="IN">Entrantes</option>
-                <option value="OUT">Salientes</option>
-              </select>
-            </div>
-
-            <div class="field">
-              <label>Horario (hora)</label>
-              <div class="rowInline">
-                <input v-model.number="filters.hour_from" type="number" min="0" max="23" class="num" />
-                <span class="muted small">a</span>
-                <input v-model.number="filters.hour_to" type="number" min="0" max="23" class="num" />
-              </div>
-              <div class="muted tiny">Ej: 22 a 6 cruza medianoche.</div>
-            </div>
-
-            <div class="field">
-              <label>Buscar (tablas)</label>
-              <input v-model.trim="filters.q" placeholder="310..., 300..." />
-              <div class="muted tiny">Filtra las tablas visibles (no el backend).</div>
-            </div>
-
-            <div class="field">
-              <label>Límite timeline</label>
-              <input v-model.number="filters.limit" type="number" min="50" max="20000" class="num" />
-            </div>
+          <div class="muted small" v-else>
+            Objetivo: <b class="mono">{{ getObjectivePhoneIndividual() }}</b>
+            <span class="muted"> · luego podrás filtrar por fecha/hora dentro del rango real del RUN.</span>
           </div>
         </div>
 
@@ -282,8 +254,281 @@
           </div>
         </div>
 
-        <!-- Gráficas -->
-        <div class="card" v-if="readyForCharts">
+        
+        <!-- =========================
+             VISTA INTELIGENTE (i2-style)
+             ========================= -->
+        <div class="smartGrid" v-if="smartReady">
+          <!-- LEFT: filtros + pernocta -->
+          <div class="smartCol">
+            <div class="card smartCard">
+              <div class="cardHead">
+                <div>
+                  <div class="title">Controles de filtro</div>
+                  <div class="muted small">Activos solo dentro del rango del RUN.</div>
+                </div>
+              </div>
+
+              <div class="field">
+                <label>Rango de fecha</label>
+                <div class="rowInline" style="gap:8px; align-items:center">
+                  <input class="inpDate" type="date" v-model="dateFrom" :min="rangeMinDate" :max="rangeMaxDate" />
+                  <span class="muted small">a</span>
+                  <input class="inpDate" type="date" v-model="dateTo" :min="rangeMinDate" :max="rangeMaxDate" />
+                </div>
+                <div class="muted tiny" v-if="rangeMinDate && rangeMaxDate">
+                  Disponible: <b>{{ rangeMinDate }}</b> → <b>{{ rangeMaxDate }}</b>
+                </div>
+              </div>
+
+              <div class="field">
+                <label>Búsqueda global</label>
+                <input v-model.trim="graphSearch" placeholder="Número o objetivo..." />
+                <div class="muted tiny">Resalta en el grafo y en tablas.</div>
+              </div>
+
+              <div class="rowInline" style="gap:8px; margin-top:10px; flex-wrap:wrap">
+                <button class="primary" @click="runIndividualAnalysis()" :disabled="loading || !runId">
+                  {{ loading ? "Analizando..." : "Aplicar filtros" }}
+                </button>
+                <button class="ghost" @click="resetFiltersSmart" :disabled="loading">Limpiar</button>
+                <button class="ghost" @click="downloadReportIndividual" :disabled="loading || !runId || !smartReady">
+                  Descargar informe (PDF)
+                </button>
+              </div>
+            </div>
+
+            <div class="card smartCard pernoctaCard" v-if="pernoctaBase">
+              <div class="muted small" style="display:flex; gap:8px; align-items:center">
+                <span class="pillMoon">🌙</span>
+                <b>Base de pernocta</b>
+              </div>
+              <div class="pernoctaName">{{ pernoctaBase.name }}</div>
+              <div class="muted tiny" style="margin-top:6px">
+                Identificada por frecuencia horaria <b>23:00–05:00</b>.
+              </div>
+              <div class="pernoctaMeta">
+                <span class="pill">CELL ID: <b class="mono">{{ pernoctaBase.cell || "-" }}</b></span>
+                <span class="pill" v-if="pernoctaBase.lac">LAC: <b class="mono">{{ pernoctaBase.lac }}</b></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- MID: rutina diaria -->
+          <div class="smartCol">
+            <div class="card smartCard">
+              <div class="cardHead">
+                <div>
+                  <div class="title">Patrón de Rutina Diaria (Tendencia)</div>
+                  <div class="muted small">Frecuencia de actividad por hora y ubicación (top).</div>
+                </div>
+              </div>
+
+              <div class="heatWrap" v-if="routineRows.length">
+                <div class="heatHead">
+                  <div class="heatLeft muted tiny">Ubicación</div>
+                  <div class="heatHours">
+                    <div v-for="h in 24" :key="h" class="heatHour">
+                      <div class="heatIcon">{{ isNightHour(h-1) ? '🌙' : '☁️' }}</div>
+                      <div class="muted tiny">{{ (h-1) }}h</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="heatRow" v-for="row in routineRows" :key="row.key">
+                  <div class="heatLeft">
+                    <div class="heatName">{{ row.name }}</div>
+                    <div class="muted tiny">
+                      <span class="mono">{{ row.cell || '—' }}</span>
+                      <span v-if="row.lac"> · LAC <span class="mono">{{ row.lac }}</span></span>
+                    </div>
+                  </div>
+
+                  <div class="heatHours">
+                    <div
+                      v-for="h in 24"
+                      :key="h"
+                      class="heatCell"
+                      :class="heatClass(row.hours[h-1])"
+                      :title="`${(h-1)}h · ${row.hours[h-1]} eventos`"
+                    ></div>
+                  </div>
+                </div>
+
+                <div class="heatLegend">
+                  <span class="dot dotNight"></span>
+                  <span class="muted tiny">Actividad nocturna</span>
+                  <span class="dot dotDay" style="margin-left:14px"></span>
+                  <span class="muted tiny">Actividad diurna</span>
+                  <span class="muted tiny" style="margin-left:14px; opacity:.85">
+                    La intensidad representa volumen de llamadas/mensajes.
+                  </span>
+                </div>
+              </div>
+
+              <div class="muted small" v-else>
+                No hay eventos suficientes para calcular tendencia (aumenta el límite o amplía el rango).
+              </div>
+            </div>
+          </div>
+
+          <!-- RIGHT: grafo i2 -->
+          <div class="smartCol">
+            <div class="card smartCard">
+              <div class="cardHead">
+                <div>
+                  <div class="title">Mapa de Vínculos de Inteligencia</div>
+                  <div class="muted small">Flechas por entrantes/salientes · Grosor por cantidad.</div>
+                </div>
+
+                <div class="rowInline" style="gap:6px; flex-wrap:wrap">
+                  <button class="ghost" @click="setGraphLayout('cose')">COSE</button>
+                  <button class="ghost" @click="setGraphLayout('concentric')">Concentric</button>
+                  <button class="ghost" @click="setGraphLayout('grid')">Grid</button>
+                  <button class="ghost" @click="fitGraph()">Ajustar</button>
+                </div>
+              </div>
+
+              <div class="field" style="margin-top:8px">
+                <input v-model.trim="graphSearch" placeholder="Buscar número..." @input="highlightGraphSearch" />
+              </div>
+
+              <div class="graphBox">
+                <div v-if="graphError" class="warn">{{ graphError }}</div>
+                <div v-else ref="graphEl" class="graphEl"></div>
+              </div>
+
+              <div class="miniDetail" v-if="selectedGraphContact">
+                <div class="miniTitle">
+                  Detalle: <b class="mono">{{ selectedGraphContact }}</b>
+                </div>
+
+                <div class="tableWrap" style="max-height:220px; overflow:auto">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Fecha/hora</th>
+                        <th>Tipo</th>
+                        <th>Dur</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="r in pagedContactEvents" :key="r.id">
+                        <td class="mono">{{ fmtTs(r.call_ts) }}</td>
+                        <td class="mono" :class="r.direction==='IN' ? 'tagIn' : 'tagOut'">
+                          {{ r.direction==='IN' ? 'ENTRANTE' : 'SALIENTE' }}
+                        </td>
+                        <td class="mono">{{ r.duration_sec ?? '-' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div class="rowInline" style="justify-content:space-between; margin-top:8px">
+                  <button class="ghost" @click="contactEventsPrev" :disabled="contactEventsPage===0">←</button>
+                  <div class="muted tiny">Página {{ contactEventsPage+1 }} / {{ contactEventsTotalPages }}</div>
+                  <button class="ghost" @click="contactEventsNext" :disabled="contactEventsPage>=contactEventsTotalPages-1">→</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Línea de tiempo amigable (lugares visitados) -->
+        <div class="card" v-if="movementDays.length">
+          <div class="cardHead">
+            <div>
+              <div class="title">Línea de Tiempo de Desplazamientos Técnicos</div>
+              <div class="muted small">
+                Click en un lugar para ver tabla ordenada (fecha/hora) de cuando estuvo allí.
+              </div>
+            </div>
+            <div class="actions">
+              <button class="ghost" @click="timelineExpanded = !timelineExpanded">
+                {{ timelineExpanded ? 'Contraer' : 'Expandir' }}
+              </button>
+            </div>
+          </div>
+
+          <div class="dayBlock" v-for="day in visibleMovementDays" :key="day.dateKey">
+            <div class="dayHead">
+              <div class="dayTitle">{{ day.dateLabel }}</div>
+              <button class="ghost tinyBtn" @click="toggleDay(day.dateKey)">
+                {{ expandedDays.has(day.dateKey) ? 'Ocultar' : 'Ver' }}
+              </button>
+            </div>
+
+            <div v-if="expandedDays.has(day.dateKey)">
+              <div class="stopCard" v-for="stop in day.stops" :key="stop.id">
+                <div class="stopIcon">
+                  <div class="iconBubble" :class="stop.isNight ? 'night' : 'day'">
+                    {{ stop.isNight ? '🌙' : '☁️' }}
+                  </div>
+                </div>
+
+                <div class="stopMain">
+                  <div class="stopTop">
+                    <div class="stopName">{{ stop.name }}</div>
+                    <div class="stopRight">
+                      <div class="mono stopDate">{{ stop.date }}</div>
+                      <div class="muted tiny">{{ stop.startLabel }} – {{ stop.endLabel }}</div>
+                    </div>
+                  </div>
+
+                  <div class="stopMeta">
+                    <span class="pill">ANTENA: <b class="mono">{{ stop.antennaNum || '-' }}</b></span>
+                    <span class="pill">CELL ID: <b class="mono">{{ stop.cell || '-' }}</b></span>
+                    <span class="pill" v-if="stop.lac">LAC: <b class="mono">{{ stop.lac }}</b></span>
+                  </div>
+
+                  <div class="stopBottom">
+                    <span class="pill">🕒 Permanencia: <b class="mono">{{ stop.durationMin }}</b> min</span>
+                    <span class="pill muted"> {{ stop.eventsCount }} eventos</span>
+
+                    <button class="ghost tinyBtn" style="margin-left:auto" @click="toggleStop(stop.id)">
+                      {{ openStopId===stop.id ? 'Ocultar detalle' : 'Ver detalle' }}
+                    </button>
+                  </div>
+
+                  <div class="stopDetail" v-if="openStopId===stop.id">
+                    <div class="tableWrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Hora</th>
+                            <th>Contacto</th>
+                            <th>Tipo</th>
+                            <th>Duración</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="r in stopDetailRows" :key="r.id">
+                            <td class="mono">{{ fmtHour(r.call_ts) }}</td>
+                            <td class="mono">{{ otherOfFlow(r) }}</td>
+                            <td class="mono" :class="r.direction==='IN' ? 'tagIn' : 'tagOut'">
+                              {{ r.direction==='IN' ? 'ENTRANTE' : 'SALIENTE' }}
+                            </td>
+                            <td class="mono">{{ r.duration_sec ?? '-' }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div class="rowInline" style="justify-content:space-between; margin-top:8px">
+                      <button class="ghost" @click="stopPrev" :disabled="stopPage===0">←</button>
+                      <div class="muted tiny">Página {{ stopPage+1 }} / {{ stopTotalPages }}</div>
+                      <button class="ghost" @click="stopNext" :disabled="stopPage>=stopTotalPages-1">→</button>
+                    </div>
+                  </div>
+
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+<!-- Gráficas -->
+        <div class="card" v-if="false && readyForCharts">
           <div class="cardHead">
             <div>
               <div class="title">Gráficas</div>
@@ -312,7 +557,7 @@
         </div>
 
         <!-- Mapa ArcGIS -->
-        <div class="card" v-if="placesTop?.length">
+        <div class="card" v-if="false && placesTop?.length">
           <div class="cardHead">
             <div>
               <div class="title">Mapa (ArcGIS) - Lugares frecuentes</div>
@@ -329,7 +574,7 @@
         </div>
 
         <!-- Lugares tabla (click -> detalle) -->
-        <div class="card" v-if="placesTop?.length">
+        <div class="card" v-if="false && placesTop?.length">
           <div class="cardHead">
             <div>
               <div class="title">Lugares frecuentados (top)</div>
@@ -371,7 +616,7 @@
         </div>
 
         <!-- Contactos tabla (click -> detalle) -->
-        <div class="card" v-if="contactsTop?.length">
+        <div class="card" v-if="false && contactsTop?.length">
           <div class="cardHead">
             <div>
               <div class="title">Contactos del objetivo (top)</div>
@@ -411,7 +656,7 @@
         </div>
 
         <!-- Timeline (paginación local) -->
-        <div class="card" v-if="flowsTimeline?.length">
+        <div class="card" v-if="false && flowsTimeline?.length">
           <div class="cardHead">
             <div>
               <div class="title">Timeline (eventos)</div>
@@ -714,7 +959,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onBeforeUnmount, nextTick } from "vue";
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
 import Chart from "chart.js/auto";
 import AntennaSection from "./AntennaSection.vue";
 
@@ -762,6 +1007,574 @@ const contactsTop = ref([]);
 const timeseries = ref([]);
 const placesTop = ref([]);
 const placesError = ref("");
+
+// =============================
+// Vista inteligente (rutina + i2 + timeline amigable)
+// =============================
+const graphEl = ref(null);
+let cy = null;
+const graphError = ref("");
+const graphLayout = ref("cose");
+const graphSearch = ref("");
+
+const selectedGraphContact = ref("");
+const contactEventsPage = ref(0);
+const contactEventsPageSize = 25;
+
+// timeline amigable
+const timelineExpanded = ref(false);
+const expandedDays = ref(new Set());
+const openStopId = ref("");
+const stopPage = ref(0);
+const stopPageSize = 15;
+
+// computed rango de fechas del RUN
+const rangeMinDate = computed(() => {
+  const v = objectiveSummary.value?.kpis?.min_ts;
+  if (!v) return "";
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return "";
+  return toLocalDateKey(d);
+});
+const rangeMaxDate = computed(() => {
+  const v = objectiveSummary.value?.kpis?.max_ts;
+  if (!v) return "";
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return "";
+  return toLocalDateKey(d);
+});
+
+// v-model date inputs (mantienen filtros.from/to en datetime-local)
+const dateFrom = computed({
+  get() {
+    const v = String(filters.value.from || "");
+    return v ? v.slice(0, 10) : "";
+  },
+  set(d) {
+    const dd = String(d || "").trim();
+    if (!dd) filters.value.from = "";
+    else filters.value.from = `${dd}T00:00`;
+  }
+});
+const dateTo = computed({
+  get() {
+    const v = String(filters.value.to || "");
+    return v ? v.slice(0, 10) : "";
+  },
+  set(d) {
+    const dd = String(d || "").trim();
+    if (!dd) filters.value.to = "";
+    else filters.value.to = `${dd}T23:59`;
+  }
+});
+
+function resetFiltersSmart() {
+  resetFilters();
+  graphSearch.value = "";
+  // Si ya sabemos el rango, lo ponemos completo
+  if (rangeMinDate.value) filters.value.from = `${rangeMinDate.value}T00:00`;
+  if (rangeMaxDate.value) filters.value.to = `${rangeMaxDate.value}T23:59`;
+}
+
+// helpers hora / noche
+function toLocalDateKey(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const da = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${da}`;
+}
+
+function isNightHour(h) {
+  return (h >= 23 || h <= 5);
+}
+function fmtHour(ts) {
+  if (!ts) return "-";
+  try {
+    const d = new Date(ts);
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return String(ts);
+  }
+}
+
+// location extraction from flow row
+function flowLoc(r) {
+  const operator = String(r.operator || "OTRO");
+  const cell = String(r.celda_inicio || r.celda_final || "").trim() || "";
+  const nameRaw = r.nombre_celda_inicio || r.nombre_celda_final || r.lugar || "";
+  const name = String(nameRaw || "").trim() || "Antena no identificada";
+
+  // estos campos pueden variar según tu SELECT; los dejamos tolerantes:
+  const lac = r.lac ?? r.lac_inicio ?? r.lac_final ?? r.lac_id ?? null;
+  const antennaNum = r.antenna_num ?? r.num_antena ?? r.torre ?? r.tower ?? null;
+
+  const key = `${operator}:${cell || name}`;
+  return { key, operator, cell, name, lac, antennaNum };
+}
+
+function otherOfFlow(r) {
+  const dir = String(r.direction || "").toUpperCase();
+  // En tu backend direction ya viene relativo al objetivo
+  if (dir === "OUT") return r.b_number;
+  if (dir === "IN") return r.a_number;
+  // fallback
+  return r.b_number || r.a_number || "";
+}
+
+// -----------------
+// Rutina diaria (heatmap)
+// -----------------
+const smartReady = computed(() => {
+  return Boolean(flowsTimeline.value?.length);
+});
+
+const routineRows = computed(() => {
+  const rows = flowsTimeline.value || [];
+  if (!rows.length) return [];
+
+  // acumula por ubicación y hora
+  const byLoc = new Map(); // key -> {meta, hours[24], total}
+  for (const r of rows) {
+    const ts = r.call_ts;
+    if (!ts) continue;
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) continue;
+
+    const h = d.getHours();
+    const loc = flowLoc(r);
+
+    if (!byLoc.has(loc.key)) {
+      byLoc.set(loc.key, {
+        key: loc.key,
+        name: loc.name,
+        cell: loc.cell,
+        lac: loc.lac,
+        antennaNum: loc.antennaNum,
+        hours: Array.from({ length: 24 }, () => 0),
+        total: 0,
+        nightTotal: 0,
+      });
+    }
+
+    const obj = byLoc.get(loc.key);
+    obj.hours[h] += 1;
+    obj.total += 1;
+    if (isNightHour(h)) obj.nightTotal += 1;
+  }
+
+  // top 5 por total
+  const arr = Array.from(byLoc.values()).sort((a, b) => b.total - a.total).slice(0, 5);
+  return arr;
+});
+
+const routineMax = computed(() => {
+  let m = 0;
+  for (const r of routineRows.value) {
+    for (const v of r.hours) m = Math.max(m, v);
+  }
+  return m || 1;
+});
+
+function heatClass(v) {
+  const n = Number(v || 0);
+  if (n <= 0) return "h0";
+  const ratio = n / routineMax.value;
+  if (ratio < 0.25) return "h1";
+  if (ratio < 0.5) return "h2";
+  if (ratio < 0.75) return "h3";
+  return "h4";
+}
+
+const pernoctaBase = computed(() => {
+  const arr = routineRows.value || [];
+  if (!arr.length) return null;
+  const best = [...arr].sort((a, b) => (b.nightTotal - a.nightTotal) || (b.total - a.total))[0];
+  if (!best || best.nightTotal <= 0) return null;
+  return { name: best.name, cell: best.cell, lac: best.lac, key: best.key };
+});
+
+// -----------------
+// Timeline amigable por días / paradas
+// -----------------
+function dayKeyFromTs(ts) {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "SIN_FECHA";
+  return toLocalDateKey(d);
+}
+
+function buildStops() {
+  const rows = (flowsTimeline.value || []).slice().sort((a, b) => new Date(a.call_ts) - new Date(b.call_ts));
+  if (!rows.length) return [];
+
+  const days = new Map(); // dateKey -> {dateKey, dateLabel, stops:[]}
+  let prevLocKey = "";
+  let cur = null;
+
+  for (const r of rows) {
+    const ts = r.call_ts;
+    if (!ts) continue;
+    const dk = dayKeyFromTs(ts);
+    const loc = flowLoc(r);
+
+    if (!days.has(dk)) {
+      days.set(dk, {
+        dateKey: dk,
+        dateLabel: new Date(`${dk}T00:00:00`).toLocaleDateString(),
+        stops: [],
+      });
+    }
+
+    // corta la parada si cambia de ubicación o cambia de día
+    if (!cur || cur.dateKey !== dk || prevLocKey !== loc.key) {
+      if (cur) days.get(cur.dateKey).stops.push(cur);
+
+      const startD = new Date(ts);
+      const h = startD.getHours();
+      cur = {
+        id: `${dk}:${loc.key}:${days.get(dk).stops.length}`,
+        dateKey: dk,
+        date: dk,
+        startTs: ts,
+        endTs: ts,
+        startLabel: fmtHour(ts),
+        endLabel: fmtHour(ts),
+        eventsCount: 0,
+        durationMin: 0,
+        isNight: isNightHour(h),
+        name: loc.name,
+        cell: loc.cell,
+        lac: loc.lac,
+        antennaNum: loc.antennaNum,
+        locKey: loc.key,
+      };
+      prevLocKey = loc.key;
+    }
+
+    cur.eventsCount += 1;
+    cur.endTs = ts;
+    cur.endLabel = fmtHour(ts);
+
+    const a = new Date(cur.startTs);
+    const b = new Date(cur.endTs);
+    const dur = Math.max(0, Math.round((b - a) / 60000));
+    cur.durationMin = dur;
+  }
+
+  if (cur) days.get(cur.dateKey).stops.push(cur);
+
+  return Array.from(days.values()).sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+}
+
+const movementDays = computed(() => buildStops());
+
+const visibleMovementDays = computed(() => {
+  const arr = movementDays.value || [];
+  if (timelineExpanded.value) return arr;
+  // por defecto muestra últimos 2 días disponibles
+  return arr.slice(Math.max(0, arr.length - 2));
+});
+
+function toggleDay(dk) {
+  const set = new Set(expandedDays.value);
+  if (set.has(dk)) set.delete(dk);
+  else set.add(dk);
+  expandedDays.value = set;
+}
+
+function toggleStop(id) {
+  if (openStopId.value === id) {
+    openStopId.value = "";
+    stopPage.value = 0;
+    return;
+  }
+  openStopId.value = id;
+  stopPage.value = 0;
+}
+
+// filas del stop abierto
+const stopDetailAll = computed(() => {
+  const id = openStopId.value;
+  if (!id) return [];
+  // id = `${dk}:${loc.key}:idx`
+  const dk = id.split(":")[0];
+  const stop = (movementDays.value || [])
+    .find(d => d.dateKey === dk)?.stops
+    ?.find(s => s.id === id);
+
+  if (!stop) return [];
+  return (flowsTimeline.value || [])
+    .filter(r => dayKeyFromTs(r.call_ts) === dk && flowLoc(r).key === stop.locKey)
+    .sort((a, b) => new Date(a.call_ts) - new Date(b.call_ts));
+});
+
+const stopTotalPages = computed(() => {
+  const n = stopDetailAll.value.length;
+  return Math.max(1, Math.ceil(n / stopPageSize));
+});
+
+const stopDetailRows = computed(() => {
+  const start = stopPage.value * stopPageSize;
+  return stopDetailAll.value.slice(start, start + stopPageSize);
+});
+
+function stopPrev() {
+  stopPage.value = Math.max(0, stopPage.value - 1);
+}
+function stopNext() {
+  stopPage.value = Math.min(stopTotalPages.value - 1, stopPage.value + 1);
+}
+
+// -----------------
+// i2 graph (desde flowsTimeline)
+// -----------------
+function buildGraphElements() {
+  const phone = getObjectivePhoneIndividual();
+  const rows = flowsTimeline.value || [];
+  if (!phone || !rows.length) return { nodes: [], edges: [] };
+
+  const nodes = new Map();
+  const edges = new Map(); // key -> data
+
+  nodes.set(phone, { data: { id: phone, label: phone, type: "target" } });
+
+  for (const r of rows) {
+    const dir = String(r.direction || "").toUpperCase();
+    const other = String(otherOfFlow(r) || "").trim();
+    if (!other) continue;
+
+    nodes.set(other, { data: { id: other, label: other, type: "contact" } });
+
+    const ts = r.call_ts;
+    const k = `${dir}:${other}`;
+    if (!edges.has(k)) {
+      edges.set(k, {
+        other,
+        dir,
+        count: 0,
+        first_ts: ts,
+        last_ts: ts,
+      });
+    }
+    const e = edges.get(k);
+    e.count += 1;
+    if (ts && (!e.first_ts || new Date(ts) < new Date(e.first_ts))) e.first_ts = ts;
+    if (ts && (!e.last_ts || new Date(ts) > new Date(e.last_ts))) e.last_ts = ts;
+  }
+
+  const edgeEls = [];
+  for (const e of edges.values()) {
+    if (e.dir === "OUT") {
+      edgeEls.push({
+        data: {
+          id: `OUT:${phone}->${e.other}`,
+          source: phone,
+          target: e.other,
+          dir: "OUT",
+          count: e.count,
+          first_ts: e.first_ts,
+          last_ts: e.last_ts,
+        },
+      });
+    } else if (e.dir === "IN") {
+      edgeEls.push({
+        data: {
+          id: `IN:${e.other}->${phone}`,
+          source: e.other,
+          target: phone,
+          dir: "IN",
+          count: e.count,
+          first_ts: e.first_ts,
+          last_ts: e.last_ts,
+        },
+      });
+    }
+  }
+
+  return { nodes: Array.from(nodes.values()), edges: edgeEls };
+}
+
+function edgeWidth(count) {
+  const c = Math.max(1, Number(count || 1));
+  return Math.min(10, 1 + Math.log2(c));
+}
+
+async function ensureGraph() {
+  if (cy || !graphEl.value) return;
+
+  graphError.value = "";
+  try {
+    // requiere: npm i cytoscape cytoscape-cose-bilkent
+    const cytoscape = (await import("cytoscape")).default;
+    let cose = null;
+    try {
+      cose = (await import("cytoscape-cose-bilkent")).default;
+      cytoscape.use(cose);
+    } catch {
+      // si no está el layout, igual funciona con grid/concentric
+    }
+
+    cy = cytoscape({
+      container: graphEl.value,
+      elements: [],
+      wheelSensitivity: 0.2,
+    });
+
+    cy.style()
+      .selector("node")
+      .style({
+        "label": "data(label)",
+        "font-size": 10,
+        "text-valign": "center",
+        "text-halign": "center",
+        "shape": "ellipse",
+        "width": 18,
+        "height": 18,
+        "background-color": "rgba(59,130,246,.92)",
+        "color": "rgba(255,255,255,.95)",
+        "border-color": "rgba(255,255,255,.35)",
+        "border-width": 1,
+      })
+      .selector('node[type="target"]')
+      .style({
+        "width": 22,
+        "height": 22,
+        "background-color": "rgba(239,68,68,.95)",
+        "border-width": 2,
+        "border-color": "rgba(255,255,255,.55)",
+        "font-weight": 900,
+      })
+      .selector("edge")
+      .style({
+        "curve-style": "bezier",
+        "target-arrow-shape": "triangle",
+        "arrow-scale": 0.9,
+        "line-color": "rgba(148,163,184,.55)",
+        "target-arrow-color": "rgba(148,163,184,.75)",
+        "label": "data(count)",
+        "color": "rgba(148,163,184,.85)",
+        "font-size": 9,
+        "text-rotation": "autorotate",
+        "width": (e) => edgeWidth(e.data("count")),
+      })
+      .selector('edge[dir="IN"]')
+      .style({
+        "line-color": "rgba(34,197,94,.55)",
+        "target-arrow-color": "rgba(34,197,94,.75)",
+      })
+      .selector('edge[dir="OUT"]')
+      .style({
+        "line-color": "rgba(59,130,246,.55)",
+        "target-arrow-color": "rgba(59,130,246,.75)",
+      })
+      .selector(".dim")
+      .style({ "opacity": 0.12 })
+      .selector(".hl")
+      .style({
+        "opacity": 1,
+        "border-color": "rgba(255,255,255,.85)",
+        "border-width": 2,
+      })
+      .update();
+
+    cy.on("tap", "node", (evt) => {
+      const id = evt.target.data("id");
+      const phone = getObjectivePhoneIndividual();
+      if (!id || id === phone) {
+        selectedGraphContact.value = "";
+        return;
+      }
+      selectedGraphContact.value = id;
+      contactEventsPage.value = 0;
+    });
+
+  } catch (e) {
+    graphError.value = "Para el grafo i2 debes instalar: npm i cytoscape cytoscape-cose-bilkent";
+  }
+}
+
+function applyGraphData() {
+  if (!cy) return;
+  const { nodes, edges } = buildGraphElements();
+
+  cy.elements().remove();
+  cy.add([...nodes, ...edges]);
+
+  setGraphLayout(graphLayout.value || "cose");
+  fitGraph();
+  highlightGraphSearch();
+}
+
+function setGraphLayout(kind) {
+  graphLayout.value = kind;
+  if (!cy) return;
+
+  const phone = getObjectivePhoneIndividual();
+  let layout = null;
+
+  if (kind === "grid") layout = { name: "grid", animate: true };
+  else if (kind === "concentric") layout = { name: "concentric", animate: true, concentric: (n) => n.degree(), levelWidth: () => 1 };
+  else layout = { name: "cose-bilkent", animate: true };
+
+  // fallback si cose-bilkent no está
+  try {
+    cy.layout(layout).run();
+  } catch {
+    cy.layout({ name: "grid", animate: true }).run();
+  }
+
+  // asegurar el objetivo al centro en layouts simples
+  try {
+    const n = cy.getElementById(phone);
+    if (n) n.lock();
+    setTimeout(() => { try { n.unlock(); } catch {} }, 900);
+  } catch {}
+}
+
+function fitGraph() {
+  try { cy?.fit(undefined, 40); } catch {}
+}
+
+function highlightGraphSearch() {
+  if (!cy) return;
+  const q = String(graphSearch.value || "").trim();
+  cy.elements().removeClass("hl dim");
+
+  if (!q) return;
+  const found = cy.nodes().filter(n => String(n.data("id")).includes(q));
+  cy.nodes().addClass("dim");
+  cy.edges().addClass("dim");
+  found.addClass("hl");
+  found.connectedEdges().removeClass("dim").addClass("hl");
+  found.connectedNodes().removeClass("dim").addClass("hl");
+  if (found.length) cy.center(found);
+}
+
+// detalle eventos de contacto seleccionado (desde flowsTimeline local)
+const contactEventsAll = computed(() => {
+  const other = selectedGraphContact.value;
+  if (!other) return [];
+  return (flowsTimeline.value || [])
+    .filter(r => String(otherOfFlow(r)) === String(other))
+    .sort((a, b) => new Date(a.call_ts) - new Date(b.call_ts));
+});
+
+const contactEventsTotalPages = computed(() => {
+  const n = contactEventsAll.value.length;
+  return Math.max(1, Math.ceil(n / contactEventsPageSize));
+});
+
+const pagedContactEvents = computed(() => {
+  const start = contactEventsPage.value * contactEventsPageSize;
+  return contactEventsAll.value.slice(start, start + contactEventsPageSize);
+});
+
+function contactEventsPrev() {
+  contactEventsPage.value = Math.max(0, contactEventsPage.value - 1);
+}
+function contactEventsNext() {
+  contactEventsPage.value = Math.min(contactEventsTotalPages.value - 1, contactEventsPage.value + 1);
+}
+
 
 // paginación timeline local
 const timelinePage = ref(0);
@@ -1827,6 +2640,38 @@ async function downloadReportGroup() {
 
 // -----------------
 // watchers / lifecycle
+
+// --- smart view: cuando llega data, prepara rango + expande días + pinta grafo
+watch(
+  () => objectiveSummary.value?.kpis,
+  (k) => {
+    if (!k) return;
+    // si no hay filtros, aplica el rango completo del RUN
+    if (!filters.value.from && rangeMinDate.value) filters.value.from = `${rangeMinDate.value}T00:00`;
+    if (!filters.value.to && rangeMaxDate.value) filters.value.to = `${rangeMaxDate.value}T23:59`;
+  }
+);
+
+watch(
+  () => flowsTimeline.value,
+  async () => {
+    // expand por defecto los días visibles
+    const arr = visibleMovementDays.value || [];
+    if (arr.length) {
+      const set = new Set(expandedDays.value);
+      for (const d of arr) set.add(d.dateKey);
+      expandedDays.value = set;
+    }
+
+    // grafo
+    await nextTick();
+    await ensureGraph();
+    applyGraphData();
+  }
+);
+
+watch(() => graphSearch.value, () => { try { highlightGraphSearch(); } catch {} });
+
 // -----------------
 watch(
   () => analysisMode.value,
@@ -1838,6 +2683,8 @@ watch(
 onBeforeUnmount(() => {
   destroyCharts();
   try { mapView?.destroy(); } catch {}
+  try { cy?.destroy(); } catch {}
+  cy = null;
 });
 
 // init
@@ -2118,4 +2965,151 @@ th{ color: var(--muted); font-weight: 900; }
   overflow:auto;
   max-height: calc(88vh - 60px);
 }
+
+
+/* ======= Vista Inteligente ======= */
+.smartGrid{
+  display:grid;
+  grid-template-columns: 320px 1fr 420px;
+  gap: 12px;
+  margin-top: 12px;
+}
+@media (max-width: 1200px){
+  .smartGrid{ grid-template-columns: 1fr; }
+}
+.smartCard{ margin-top: 0; }
+.pernoctaCard{
+  background: linear-gradient(180deg, rgba(99,102,241,.18), rgba(34,211,238,.06));
+  border-color: rgba(99,102,241,.25);
+}
+.pernoctaName{ font-size: 20px; font-weight: 950; margin-top: 6px; }
+.pernoctaMeta{ display:flex; gap:8px; margin-top: 10px; flex-wrap:wrap; }
+.pill{
+  display:inline-flex;
+  gap:6px;
+  align-items:center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.14);
+  background: rgba(255,255,255,.06);
+  font-size: 12px;
+}
+.pillMoon{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  background: rgba(99,102,241,.22);
+  border: 1px solid rgba(99,102,241,.35);
+}
+
+.inpDate{
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.14);
+  background: rgba(0,0,0,.15);
+  color: inherit;
+}
+
+.heatWrap{ margin-top: 10px; overflow:auto; }
+.heatHead, .heatRow{
+  display:grid;
+  grid-template-columns: 220px 1fr;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.heatLeft{ min-width: 220px; }
+.heatName{ font-weight: 900; }
+.heatHours{
+  display:grid;
+  grid-template-columns: repeat(24, 18px);
+  gap: 6px;
+  min-width: calc(24 * 18px + 23 * 6px);
+}
+.heatHour{ text-align:center; }
+.heatIcon{ font-size: 12px; line-height: 12px; margin-bottom: 2px; opacity: .95; }
+.heatCell{
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.03);
+}
+.h0{ background: rgba(255,255,255,.03); }
+.h1{ background: rgba(96,165,250,.18); }
+.h2{ background: rgba(96,165,250,.32); }
+.h3{ background: rgba(34,211,238,.38); }
+.h4{ background: rgba(34,211,238,.58); border-color: rgba(34,211,238,.35); }
+
+.heatLegend{ margin-top: 10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.dot{ width:10px; height:10px; border-radius: 50%; display:inline-block; }
+.dotNight{ background: rgba(99,102,241,.75); }
+.dotDay{ background: rgba(34,211,238,.75); }
+
+.graphBox{
+  border: 1px solid rgba(255,255,255,.10);
+  border-radius: 14px;
+  background: rgba(0,0,0,.14);
+  min-height: 360px;
+  overflow:hidden;
+}
+.graphEl{ width: 100%; height: 360px; }
+.miniDetail{ margin-top: 10px; }
+.miniTitle{ font-weight: 900; margin-bottom: 6px; }
+
+.tagIn{ color: rgba(34,197,94,1); font-weight: 900; }
+.tagOut{ color: rgba(59,130,246,1); font-weight: 900; }
+
+/* Cytoscape highlight */
+:deep(.hl){ opacity: 1 !important; }
+:deep(.dim){ opacity: .15 !important; }
+
+/* ======= Timeline amigable ======= */
+.dayBlock{ margin-top: 10px; }
+.dayHead{
+  display:flex;
+  justify-content: space-between;
+  align-items:center;
+  margin: 8px 0;
+}
+.dayTitle{ font-weight: 950; }
+.tinyBtn{ padding: 6px 10px; border-radius: 10px; font-size: 12px; }
+
+.stopCard{
+  display:grid;
+  grid-template-columns: 44px 1fr;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.04);
+  margin-bottom: 10px;
+}
+.stopIcon{ display:flex; justify-content:center; }
+.iconBubble{
+  width: 34px; height: 34px;
+  border-radius: 12px;
+  display:flex; align-items:center; justify-content:center;
+  border: 1px solid rgba(255,255,255,.14);
+}
+.iconBubble.day{ background: rgba(34,211,238,.12); border-color: rgba(34,211,238,.25); }
+.iconBubble.night{ background: rgba(99,102,241,.16); border-color: rgba(99,102,241,.30); }
+
+.stopTop{
+  display:flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items:flex-start;
+}
+.stopName{ font-weight: 950; }
+.stopRight{ text-align:right; }
+.stopDate{ font-weight: 900; }
+.stopMeta{ display:flex; gap:8px; flex-wrap:wrap; margin-top: 6px; }
+.stopBottom{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top: 8px; }
+.stopDetail{ margin-top: 10px; }
+
 </style>
