@@ -363,41 +363,59 @@ async function getAntennaMeta() {
  * Reutilizable para top y para enriquecer lugares comunes / coincidencias.
  */
 async function buildPlacesQuerySQL() {
+  // Ya sabemos que tu tabla antennas tiene estas columnas fijas.
+  // Si quieres seguir usando meta, puedes, pero aquí lo dejamos robusto y directo.
   const meta = await getAntennaMeta();
-  const canJoin = Boolean(meta.hasTable && meta.opCol && meta.keyCol);
+  const canJoin = Boolean(meta.hasTable); // si existe la tabla
 
   const joinSql = canJoin
-    ? `LEFT JOIN antennas a ON a.${qIdent(meta.opCol)} = n.operator AND a.${qIdent(meta.keyCol)} = n.cell_key`
+    ? `LEFT JOIN antennas a
+        ON UPPER(a.operator::text) = UPPER(n.operator::text)
+       AND REGEXP_REPLACE(a.cell_id::text, '[^0-9]', '', 'g') = n.cell_key`
     : "";
 
-  const labelExpr = canJoin && meta.labelCol
-    ? `COALESCE(a.${qIdent(meta.labelCol)}::text, n.cell_name, 'SIN_DATO')`
+  // Label: preferir nombre real de antennas (site_name > cell_name), si no el del CDR, si no SIN_DATO
+  const labelExpr = canJoin
+    ? `COALESCE(NULLIF(TRIM(a.site_name::text), ''),
+                NULLIF(TRIM(a.cell_name::text), ''),
+                n.cell_name,
+                'SIN_DATO')`
     : `COALESCE(n.cell_name, 'SIN_DATO')`;
 
+  // LAC/TAC (si está en antennas). Ojo: en CDR podrías tener lac_inicio/lac_final,
+  // pero aquí devolvemos lac_tac del catálogo.
+  const lacExpr = canJoin
+    ? `NULLIF(TRIM(a.lac_tac::text), '')`
+    : `NULL::text`;
+
+  // Coordenadas
   let latExpr = `NULL::double precision`;
   let lonExpr = `NULL::double precision`;
 
-  if (canJoin && meta.latCol && meta.lonCol) {
-    latExpr = `a.${qIdent(meta.latCol)}::double precision`;
-    lonExpr = `a.${qIdent(meta.lonCol)}::double precision`;
-  } else if (canJoin && meta.postgis && meta.geomCol) {
-    latExpr = `ST_Y(a.${qIdent(meta.geomCol)})::double precision`;
-    lonExpr = `ST_X(a.${qIdent(meta.geomCol)})::double precision`;
+  if (canJoin) {
+    latExpr = `a.lat::double precision`;
+    lonExpr = `a.lon::double precision`;
   }
 
   const sql = `
     WITH cells AS (
-      SELECT operator, celda_inicio AS cell_id, nombre_celda_inicio AS cell_name, call_ts, direction, a_number, b_number
+      SELECT operator,
+             celda_inicio AS cell_id,
+             nombre_celda_inicio AS cell_name,
+             call_ts, direction, a_number, b_number
       FROM call_records_tmp
       __WHERE__
-      AND celda_inicio IS NOT NULL
+        AND celda_inicio IS NOT NULL
 
       UNION ALL
 
-      SELECT operator, celda_final AS cell_id, nombre_celda_final AS cell_name, call_ts, direction, a_number, b_number
+      SELECT operator,
+             celda_final AS cell_id,
+             nombre_celda_final AS cell_name,
+             call_ts, direction, a_number, b_number
       FROM call_records_tmp
       __WHERE__
-      AND celda_final IS NOT NULL
+        AND celda_final IS NOT NULL
     ),
     norm AS (
       SELECT
@@ -411,19 +429,21 @@ async function buildPlacesQuerySQL() {
       n.operator,
       n.cell_key,
       ${labelExpr} AS lugar,
+      ${lacExpr}   AS lac_tac,
       COUNT(*)::bigint AS hits,
       ${latExpr} AS lat,
       ${lonExpr} AS lon
     FROM norm n
     ${joinSql}
     WHERE n.cell_key IS NOT NULL AND n.cell_key <> ''
-    GROUP BY n.operator, n.cell_key, lugar, lat, lon
+    GROUP BY n.operator, n.cell_key, lugar, lac_tac, lat, lon
     ORDER BY hits DESC
     LIMIT __LIMIT__;
   `;
 
   return { sql, canJoin };
 }
+
 
 // ==============================
 // Routes
@@ -1436,10 +1456,6 @@ router.post("/runs/:runId/report/pdf", authRequired, async (req, res) => {
     doc.pipe(res);
 
     // Encabezado
-    doc.fontSize(18).font("Helvetica-Bold").text(`Analisis solicitud: ${runName}`, { align: "left" });
-    doc.moveDown(0.5);
-
-    doc.fontSize(10).font("Helvetica").fillColor("#333");
     doc.text(`RUN ID: ${runId}`);
     doc.text(`Modo: ${mode === "group" ? "Grupal (2 objetivos)" : "Individual"}`);
     doc.moveDown(0.3);
@@ -1450,8 +1466,8 @@ router.post("/runs/:runId/report/pdf", authRequired, async (req, res) => {
       for (const o of objectives) {
         doc.text(`• ${o.phone || "-"}  (confianza: ${Math.round((Number(o.confidence || 0)) * 100)}%)`);
       }
+      doc.moveDown(0.3);
     }
-    doc.moveDown(0.3);
 
     const minTs = dateRange.min_ts || dateRange.from || "-";
     const maxTs = dateRange.max_ts || dateRange.to || "-";
@@ -1474,9 +1490,12 @@ router.post("/runs/:runId/report/pdf", authRequired, async (req, res) => {
     };
 
     putImage(dataUrlToBuffer(images.timeseriesChart), "Línea de tiempo de movimientos");
-    putImage(dataUrlToBuffer(images.contactsChart), "Top contacto(s) (tipo i2)");
+    putImage(dataUrlToBuffer(images.routineHeatmap), "Patrón de rutina diaria (por días)");
+    putImage(dataUrlToBuffer(images.graphScreenshot), "Grafo de contactos (estilo i2)");
+    putImage(dataUrlToBuffer(images.contactsChart), "Top contacto(s)");
     putImage(dataUrlToBuffer(images.placesChart), "Lugares frecuentados (top)");
     putImage(dataUrlToBuffer(images.mapScreenshot), "Mapa (ArcGIS) - pantallazo");
+
 
     doc.end();
   } catch (e) {

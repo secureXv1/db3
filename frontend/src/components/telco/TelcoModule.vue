@@ -11,7 +11,7 @@
       </div>
     </div>
 
-    <!-- Tabs -->
+        <!-- Tabs -->
     <div class="tabsRow">
       <button class="ghost" :class="{ active: activeSub==='xdr' }" @click="activeSub='xdr'">
         Análisis RETEL
@@ -27,70 +27,40 @@
         <div class="cardHead">
           <div>
             <div class="title">Sesión (RUN)</div>
-            <div class="muted small">
-              Se guarda en localStorage como <span class="mono">telco_run_id</span>.
-            </div>
+            <div class="muted small">Crea un RUN para cargar registros y generar análisis.</div>
           </div>
 
           <div class="actions">
-            <div class="field inline">
-              <label>Nombre del RUN</label>
-              <input v-model.trim="runName" placeholder="Ej: Caso Kennedy - 2026-01-01" />
-            </div>
-
-            <button class="primary" @click="createRun" :disabled="loading">Crear RUN</button>
-            <button class="ghost" @click="newAnalysis" :disabled="loading || !runId">Nuevo análisis (limpiar)</button>
-            <button class="danger" @click="clearRun" :disabled="loading || !runId">Borrar registros</button>
+            <button class="primary" @click="createRun()" :disabled="loading">Crear RUN</button>
+            <button class="ghost" @click="reloadRuns()" :disabled="loading">Actualizar</button>
           </div>
         </div>
 
-        <div class="warn" v-if="!runId">
-          Crea un RUN para habilitar la selección de tipo de análisis y las cargas.
-        </div>
+        <div class="rowInline" style="gap:10px; flex-wrap:wrap">
+          <div class="field">
+            <label>RUN actual</label>
+            <select v-model="runId" @change="onSelectRun">
+              <option :value="null">— Selecciona —</option>
+              <option v-for="r in runs" :key="r.id" :value="r.id">
+                {{ r.name }} (#{{ r.id }})
+              </option>
+            </select>
+          </div>
 
-        <div class="ok" v-if="runMeta && runId">
-          RUN:
-          <b>{{ runMeta.name }}</b>
-          <span class="muted small"> · creado:</span>
-          <b>{{ fmtTs(runMeta.created_at) }}</b>
-          <span class="muted small"> · runId:</span>
-          <b class="mono">{{ runId }}</b>
-        </div>
-      </div>
-
-      <!-- Selección obligatoria de tipo de análisis -->
-      <div class="card" v-if="runId">
-        <div class="cardHead">
-          <div>
-            <div class="title">Tipo de análisis</div>
-            <div class="muted small">
-              Debes seleccionar el tipo de análisis para habilitar la carga y las gráficas.
+          <div class="field" v-if="runId">
+            <label>Tipo de análisis</label>
+            <div class="seg">
+              <button class="segBtn" :class="{ on: analysisMode==='individual' }" @click="setMode('individual')">Individual</button>
+              <button class="segBtn" :class="{ on: analysisMode==='group' }" @click="setMode('group')">Grupal</button>
             </div>
           </div>
-        </div>
-
-        <div class="segRow">
-          <button
-            class="segBtn"
-            :class="{ segActive: analysisMode==='individual' }"
-            @click="setMode('individual')"
-          >
-            Individual (1 objetivo)
-          </button>
-          <button
-            class="segBtn"
-            :class="{ segActive: analysisMode==='group' }"
-            @click="setMode('group')"
-          >
-            Grupal (2 objetivos)
-          </button>
         </div>
 
         <div class="muted tiny" v-if="analysisMode==='individual'">
           Subes varios archivos del mismo objetivo. El sistema detecta automáticamente el número repetido (objetivo).
         </div>
         <div class="muted tiny" v-else-if="analysisMode==='group'">
-          Cargas objetivo 1 (grupo 1) y objetivo 2 (grupo 2). Luego verás comunes + coincidencias + análisis individual por objetivo.
+          Cargas objetivo 1 (grupo 1) y objetivo 2 (grupo 2). Verás comunes + coincidencias + análisis individual por objetivo.
         </div>
       </div>
 
@@ -98,9 +68,7 @@
         Selecciona <b>Análisis Individual</b> o <b>Análisis Grupal</b> para continuar.
       </div>
 
-      <!-- =========================
-           INDIVIDUAL
-           ========================= -->
+
       <template v-if="analysisMode==='individual'">
         <!-- Upload individual -->
         <div class="card">
@@ -349,8 +317,9 @@
                       v-for="h in 24"
                       :key="h"
                       class="heatCell"
-                      :class="heatClass(row.hours[h-1])"
-                      :title="`${(h-1)}h · ${row.hours[h-1]} eventos`"
+                      :style="heatStyle(row.hours[h-1])"
+                      :title="`${(h-1)}h · ${row.hours[h-1]} día(s)`"
+
                     ></div>
                   </div>
                 </div>
@@ -363,6 +332,19 @@
                   <span class="muted tiny" style="margin-left:14px; opacity:.85">
                     La intensidad representa volumen de llamadas/mensajes.
                   </span>
+                </div>
+
+                <div class="heatBases">
+                  <div class="muted tiny" v-if="pernoctaBase">
+                    🌙 <b>Base nocturna:</b> {{ pernoctaBase.name }}
+                    <span class="mono" v-if="pernoctaBase.cell"> · CELL {{ pernoctaBase.cell }}</span>
+                    <span class="mono" v-if="pernoctaBase.lac"> · LAC {{ pernoctaBase.lac }}</span>
+                  </div>
+                  <div class="muted tiny" v-if="diurnaBase">
+                    ☁️ <b>Base diurna:</b> {{ diurnaBase.name }}
+                    <span class="mono" v-if="diurnaBase.cell"> · CELL {{ diurnaBase.cell }}</span>
+                    <span class="mono" v-if="diurnaBase.lac"> · LAC {{ diurnaBase.lac }}</span>
+                  </div>
                 </div>
               </div>
 
@@ -381,11 +363,19 @@
                   <div class="muted small">Flechas por entrantes/salientes · Grosor por cantidad.</div>
                 </div>
 
-                <div class="rowInline" style="gap:6px; flex-wrap:wrap">
+                <div class="rowInline" style="gap:6px; flex-wrap:wrap; align-items:center">
                   <button class="ghost" @click="setGraphLayout('cose')">COSE</button>
                   <button class="ghost" @click="setGraphLayout('concentric')">Concentric</button>
                   <button class="ghost" @click="setGraphLayout('grid')">Grid</button>
                   <button class="ghost" @click="fitGraph()">Ajustar</button>
+
+                  <span class="muted tiny" style="margin-left:8px">Min interacciones</span>
+                  <input class="miniNum" type="number" min="1" v-model.number="graphMinInteractions" @change="applyGraphData()" />
+
+                  <button class="ghost" @click="toggleGraphExpand()">
+                    {{ graphExpanded ? 'Salir' : 'Expandir' }}
+                  </button>
+                  <button class="ghost" @click="captureGraphShot()">📸 Pantallazo</button>
                 </div>
               </div>
 
@@ -393,14 +383,27 @@
                 <input v-model.trim="graphSearch" placeholder="Buscar número..." @input="highlightGraphSearch" />
               </div>
 
-              <div class="graphBox">
-                <div v-if="graphError" class="warn">{{ graphError }}</div>
-                <div v-else ref="graphEl" class="graphEl"></div>
+            <div class="graphBox" :class="{ expanded: graphExpanded }">
+              <div v-if="graphError" class="warn">{{ graphError }}</div>
+              <div v-else ref="graphEl" class="graphEl"></div>
+
+              <div class="shotInfo" v-if="graphShot">
+                <div class="muted tiny">✅ Pantallazo listo (se incluirá en el PDF del informe).</div>
+                <img :src="graphShot" alt="captura grafo" class="shotImg" />
               </div>
+            </div>
+
+
 
               <div class="miniDetail" v-if="selectedGraphContact">
                 <div class="miniTitle">
                   Detalle: <b class="mono">{{ selectedGraphContact }}</b>
+                  <div class="muted tiny" v-if="selectedGraphStats">
+                    <b class="mono">{{ selectedGraphStats.total }}</b> interacciones ·
+                    IN <b class="mono">{{ selectedGraphStats.inCount }}</b> ·
+                    OUT <b class="mono">{{ selectedGraphStats.outCount }}</b>
+                    <span v-if="selectedGraphStats.first_ts"> · {{ fmtTs(selectedGraphStats.first_ts) }} → {{ fmtTs(selectedGraphStats.last_ts) }}</span>
+                  </div>
                 </div>
 
                 <div class="tableWrap" style="max-height:220px; overflow:auto">
@@ -428,6 +431,7 @@
                   <button class="ghost" @click="contactEventsPrev" :disabled="contactEventsPage===0">←</button>
                   <div class="muted tiny">Página {{ contactEventsPage+1 }} / {{ contactEventsTotalPages }}</div>
                   <button class="ghost" @click="contactEventsNext" :disabled="contactEventsPage>=contactEventsTotalPages-1">→</button>
+
                 </div>
               </div>
             </div>
@@ -557,7 +561,7 @@
         </div>
 
         <!-- Mapa ArcGIS -->
-        <div class="card" v-if="false && placesTop?.length">
+        <div class="card" v-if="placesTop?.length">
           <div class="cardHead">
             <div>
               <div class="title">Mapa (ArcGIS) - Lugares frecuentes</div>
@@ -1008,6 +1012,10 @@ const timeseries = ref([]);
 const placesTop = ref([]);
 const placesError = ref("");
 
+// lookup local para resolver antenas (si el backend no hace JOIN correctamente)
+const antennaLookup = ref(new Map()); // key -> { name, antennaNum, lac, lat, lon }
+
+
 // =============================
 // Vista inteligente (rutina + i2 + timeline amigable)
 // =============================
@@ -1016,13 +1024,16 @@ let cy = null;
 const graphError = ref("");
 const graphLayout = ref("cose");
 const graphSearch = ref("");
+const graphExpanded = ref(false);
+const graphMinInteractions = ref(5);
+const graphShot = ref(null);
 
 const selectedGraphContact = ref("");
 const contactEventsPage = ref(0);
 const contactEventsPageSize = 25;
 
 // timeline amigable
-const timelineExpanded = ref(false);
+const timelineExpanded = ref(true);
 const expandedDays = ref(new Set());
 const openStopId = ref("");
 const stopPage = ref(0);
@@ -1098,19 +1109,82 @@ function fmtHour(ts) {
 }
 
 // location extraction from flow row
-function flowLoc(r) {
-  const operator = String(r.operator || "OTRO");
-  const cell = String(r.celda_inicio || r.celda_final || "").trim() || "";
-  const nameRaw = r.nombre_celda_inicio || r.nombre_celda_final || r.lugar || "";
-  const name = String(nameRaw || "").trim() || "Antena no identificada";
-
-  // estos campos pueden variar según tu SELECT; los dejamos tolerantes:
-  const lac = r.lac ?? r.lac_inicio ?? r.lac_final ?? r.lac_id ?? null;
-  const antennaNum = r.antenna_num ?? r.num_antena ?? r.torre ?? r.tower ?? null;
-
-  const key = `${operator}:${cell || name}`;
-  return { key, operator, cell, name, lac, antennaNum };
+function makeAntennaKey(operator, cell, lac) {
+  const op = String(operator || "OTRO").toUpperCase();
+  const c = String(cell || "").trim();
+  const l = lac == null ? "" : String(lac).trim();
+  return `${op}:${c}:${l}`;
 }
+
+function flowLoc(r) {
+  const operator = String(r.operator || r.operador || "OTRO").toUpperCase();
+
+  // celda/cell id tolerante
+  const cell = String(
+    r.celda_inicio ?? r.celda_final ?? r.cell_id ?? r.cellid ?? r.cell ?? r.celda ?? r.cellid_inicio ?? ""
+  ).trim();
+
+  // LAC tolerante
+  const lac = r.lac ?? r.lac_inicio ?? r.lac_final ?? r.lac_id ?? r.lac_value ?? null;
+
+  // número de torre/antena tolerante
+  const antennaNum = r.antenna_num ?? r.num_antena ?? r.torre ?? r.tower ?? r.antenna ?? r.site ?? null;
+
+  // nombre tolerante (si viene desde JOIN)
+  const nameRaw =
+    r.antenna_name ??
+    r.nombre_antena ??
+    r.nombre_celda_inicio ??
+    r.nombre_celda_final ??
+    r.nombre_celda ??
+    r.lugar ??
+    "";
+
+  let name = String(nameRaw || "").trim() || "Antena no identificada";
+  let lat = r.lat ?? r.latitude ?? null;
+  let lon = r.lon ?? r.lng ?? r.longitude ?? null;
+
+  // fallback: intentar resolver con lookup (a partir de placesTop / places endpoint)
+  if ((name === "Antena no identificada" || !name) && cell) {
+    const key = makeAntennaKey(operator, cell, lac);
+    const hit = antennaLookup.value.get(key) || antennaLookup.value.get(makeAntennaKey(operator, cell, null));
+    if (hit?.name) name = hit.name;
+    if (lat == null && hit?.lat != null) lat = hit.lat;
+    if (lon == null && hit?.lon != null) lon = hit.lon;
+  }
+
+  const key = makeAntennaKey(operator, cell || name, lac);
+  return { key, operator, cell, name, lac, antennaNum, lat, lon };
+}
+
+
+function rebuildAntennaLookup() {
+  const m = new Map();
+  for (const r of (placesTop.value || [])) {
+    const op = String(r.operator || r.operador || "OTRO").toUpperCase();
+    const cell = String(r.cell_id ?? r.cellid ?? r.cell ?? r.celda ?? r.cell_key ?? "").trim();
+    const lac = r.lac ?? r.lac_id ?? null;
+    const name = String(r.lugar ?? r.antenna_name ?? r.name ?? "").trim() || null;
+    const lat = r.lat ?? r.latitude ?? null;
+    const lon = r.lon ?? r.lng ?? r.longitude ?? null;
+
+    if (!cell) continue;
+    const payload = { name, lac, lat, lon, antennaNum: r.antenna_num ?? r.num_antena ?? r.torre ?? null };
+    m.set(makeAntennaKey(op, cell, lac), payload);
+    m.set(makeAntennaKey(op, cell, null), payload);
+  }
+  antennaLookup.value = m;
+}
+
+watch(
+  () => placesTop.value,
+  () => {
+    try { rebuildAntennaLookup(); } catch {}
+  },
+  { deep: true }
+);
+
+
 
 function otherOfFlow(r) {
   const dir = String(r.direction || "").toUpperCase();
@@ -1175,21 +1249,119 @@ const routineMax = computed(() => {
   return m || 1;
 });
 
-function heatClass(v) {
+function heatStyle(v) {
   const n = Number(v || 0);
-  if (n <= 0) return "h0";
-  const ratio = n / routineMax.value;
-  if (ratio < 0.25) return "h1";
-  if (ratio < 0.5) return "h2";
-  if (ratio < 0.75) return "h3";
-  return "h4";
+  const max = Math.max(1, Number(routineMax.value || 1));
+  const ratio = Math.min(1, n / max);
+
+  // Más contraste: celdas vacías muy oscuras; altas más saturadas/claras
+  if (n <= 0) {
+    return {
+      background: "rgba(255,255,255,.04)",
+      border: "1px solid rgba(255,255,255,.06)",
+    };
+  }
+
+  // Azul -> naranja según intensidad (más intuitivo)
+  const cold = [59, 130, 246];   // azul
+  const hot  = [251, 146, 60];   // naranja
+  const mix = (a, b, t) => Math.round(a + (b - a) * t);
+  const t = Math.max(0, ratio - 0.55) / 0.45;
+  const rgb = [mix(cold[0], hot[0], t), mix(cold[1], hot[1], t), mix(cold[2], hot[2], t)];
+  const alpha = 0.25 + ratio * 0.70;
+
+  return {
+    background: `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha.toFixed(3)})`,
+    border: "1px solid rgba(255,255,255,.10)",
+    boxShadow: ratio > 0.75 ? "0 0 0 1px rgba(255,255,255,.12) inset" : "none",
+  };
 }
+
+
+
+function buildRoutineSvgDataUrl() {
+  // SVG ligero para incluir en PDF sin depender de html2canvas
+  try {
+    const rows = routineRows.value || [];
+    if (!rows.length) return null;
+
+    const top = rows.slice(0, 8);
+    const max = Math.max(1, Number(routineMax.value || 1));
+
+    const cellW = 16;
+    const cellH = 14;
+    const leftW = 170;
+    const topH = 26;
+
+    const w = leftW + 24 * cellW + 10;
+    const h = topH + top.length * cellH + 18;
+
+    const esc = (s) => String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+    const heatFill = (n) => {
+      const ratio = Math.min(1, Number(n || 0) / max);
+      if (!n) return "rgba(255,255,255,0.06)";
+      const cold = [59,130,246];
+      const hot = [251,146,60];
+      const mix = (a,b,t)=>Math.round(a+(b-a)*t);
+      const t = Math.max(0, ratio - 0.55) / 0.45;
+      const rgb = [mix(cold[0],hot[0],t), mix(cold[1],hot[1],t), mix(cold[2],hot[2],t)];
+      const alpha = 0.25 + ratio * 0.70;
+      return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha.toFixed(3)})`;
+    };
+
+    let svg = [];
+    svg.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`);
+    svg.push(`<rect x="0" y="0" width="${w}" height="${h}" rx="10" ry="10" fill="#0b1220"/>`);
+    svg.push(`<text x="12" y="18" fill="#e2e8f0" font-size="12" font-family="sans-serif" font-weight="700">Patrón de Rutina Diaria (Tendencia)</text>`);
+
+    // encabezado horas
+    for (let hr = 0; hr < 24; hr++) {
+      const x = leftW + hr * cellW;
+      svg.push(`<text x="${x+3}" y="${topH-8}" fill="#94a3b8" font-size="9" font-family="sans-serif">${hr}</text>`);
+    }
+
+    // filas
+    top.forEach((r, i) => {
+      const y = topH + i * cellH;
+      svg.push(`<text x="12" y="${y+11}" fill="#cbd5e1" font-size="10" font-family="sans-serif">${esc(r.name).slice(0, 22)}</text>`);
+      for (let hr = 0; hr < 24; hr++) {
+        const x = leftW + hr * cellW;
+        svg.push(`<rect x="${x}" y="${y}" width="${cellW-2}" height="${cellH-2}" rx="3" ry="3" fill="${heatFill(r.hours?.[hr] || 0)}" />`);
+      }
+    });
+
+    svg.push(`</svg>`);
+    const raw = svg.join("");
+    return "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(raw)));
+  } catch {
+    return null;
+  }
+}
+
 
 const pernoctaBase = computed(() => {
   const arr = routineRows.value || [];
   if (!arr.length) return null;
   const best = [...arr].sort((a, b) => (b.nightTotal - a.nightTotal) || (b.total - a.total))[0];
   if (!best || best.nightTotal <= 0) return null;
+  return { name: best.name, cell: best.cell, lac: best.lac, key: best.key };
+});
+
+
+const diurnaBase = computed(() => {
+  const arr = routineRows.value || [];
+  if (!arr.length) return null;
+
+  // suma horas diurnas (6..22)
+  const daySum = (r) => {
+    let s = 0;
+    for (let h = 6; h <= 22; h++) s += Number(r.hours?.[h] || 0);
+    return s;
+  };
+
+  const best = [...arr].sort((a, b) => (daySum(b) - daySum(a)) || (b.total - a.total))[0];
+  if (!best || daySum(best) <= 0) return null;
   return { name: best.name, cell: best.cell, lac: best.lac, key: best.key };
 });
 
@@ -1332,65 +1504,101 @@ function buildGraphElements() {
   const rows = flowsTimeline.value || [];
   if (!phone || !rows.length) return { nodes: [], edges: [] };
 
-  const nodes = new Map();
-  const edges = new Map(); // key -> data
+  const minTotal = Math.max(1, Number(graphMinInteractions.value || 1));
 
-  nodes.set(phone, { data: { id: phone, label: phone, type: "target" } });
-
+  // stats por contacto
+  const stats = new Map(); // other -> { other, inCount, outCount, first_ts, last_ts }
   for (const r of rows) {
     const dir = String(r.direction || "").toUpperCase();
     const other = String(otherOfFlow(r) || "").trim();
-    if (!other) continue;
+    if (!other || other === phone) continue;
 
-    nodes.set(other, { data: { id: other, label: other, type: "contact" } });
-
-    const ts = r.call_ts;
-    const k = `${dir}:${other}`;
-    if (!edges.has(k)) {
-      edges.set(k, {
-        other,
-        dir,
-        count: 0,
-        first_ts: ts,
-        last_ts: ts,
-      });
+    const ts = r.call_ts || r.ts || r.datetime || r.fecha || null;
+    const cur = stats.get(other) || { other, inCount: 0, outCount: 0, first_ts: ts, last_ts: ts };
+    if (dir === "IN") cur.inCount += 1;
+    else if (dir === "OUT") cur.outCount += 1;
+    else {
+      // fallback: si no viene direction consistente, inferir por a_number/b_number
+      const a = String(r.a_number || r.from || r.origin || "").trim();
+      const b = String(r.b_number || r.to || r.dest || "").trim();
+      if (a && String(a) === String(other)) cur.inCount += 1;
+      else cur.outCount += 1;
     }
-    const e = edges.get(k);
-    e.count += 1;
-    if (ts && (!e.first_ts || new Date(ts) < new Date(e.first_ts))) e.first_ts = ts;
-    if (ts && (!e.last_ts || new Date(ts) > new Date(e.last_ts))) e.last_ts = ts;
+
+    if (ts) {
+      if (!cur.first_ts || new Date(ts) < new Date(cur.first_ts)) cur.first_ts = ts;
+      if (!cur.last_ts || new Date(ts) > new Date(cur.last_ts)) cur.last_ts = ts;
+    }
+    stats.set(other, cur);
   }
 
-  const edgeEls = [];
-  for (const e of edges.values()) {
-    if (e.dir === "OUT") {
-      edgeEls.push({
+  const nodes = new Map();
+  nodes.set(phone, { data: { id: phone, label: phone, type: "target" } });
+
+  const edges = [];
+
+  for (const s of stats.values()) {
+    const total = s.inCount + s.outCount;
+    if (total < minTotal) continue;
+
+    nodes.set(s.other, { data: { id: s.other, label: s.other, type: "contact", total, inCount: s.inCount, outCount: s.outCount } });
+
+    if (s.outCount > 0) {
+      edges.push({
         data: {
-          id: `OUT:${phone}->${e.other}`,
+          id: `OUT:${phone}->${s.other}`,
           source: phone,
-          target: e.other,
+          target: s.other,
           dir: "OUT",
-          count: e.count,
-          first_ts: e.first_ts,
-          last_ts: e.last_ts,
+          count: s.outCount,
+          total,
+          inCount: s.inCount,
+          outCount: s.outCount,
+          first_ts: s.first_ts,
+          last_ts: s.last_ts,
         },
       });
-    } else if (e.dir === "IN") {
-      edgeEls.push({
+    }
+    if (s.inCount > 0) {
+      edges.push({
         data: {
-          id: `IN:${e.other}->${phone}`,
-          source: e.other,
+          id: `IN:${s.other}->${phone}`,
+          source: s.other,
           target: phone,
           dir: "IN",
-          count: e.count,
-          first_ts: e.first_ts,
-          last_ts: e.last_ts,
+          count: s.inCount,
+          total,
+          inCount: s.inCount,
+          outCount: s.outCount,
+          first_ts: s.first_ts,
+          last_ts: s.last_ts,
         },
       });
     }
   }
 
-  return { nodes: Array.from(nodes.values()), edges: edgeEls };
+  return { nodes: Array.from(nodes.values()), edges };
+}
+
+
+function edgeColor(dir, count) {
+  // Color según cantidad + dirección (IN verde, OUT azul). A más vínculos, más intenso.
+  const c = Math.max(1, Number(count || 1));
+  const intensity = Math.min(1, Math.log2(c) / 6); // 0..1 aprox
+  const isIn = String(dir || "").toUpperCase() === "IN";
+  // base RGB
+  const base = isIn ? [34, 197, 94] : [59, 130, 246];
+  // mezcla hacia naranja en alta intensidad para resaltar
+  const hot = [251, 146, 60];
+  const mix = (a, b, t) => Math.round(a + (b - a) * t);
+  const t = Math.max(0, intensity - 0.55) / 0.45; // empieza a "calentar" después de cierto umbral
+  const rgb = [
+    mix(base[0], hot[0], t),
+    mix(base[1], hot[1], t),
+    mix(base[2], hot[2], t),
+  ];
+  const alpha = 0.25 + intensity * 0.65;
+  return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha.toFixed(3)})`;
 }
 
 function edgeWidth(count) {
@@ -1416,8 +1624,19 @@ async function ensureGraph() {
     cy = cytoscape({
       container: graphEl.value,
       elements: [],
-      wheelSensitivity: 0.2,
+      wheelSensitivity: 0.18,
+      minZoom: 0.15,
+      maxZoom: 2.8,
+      motionBlur: true,
+      textureOnViewport: true,
     });
+    try {
+      cy.boxSelectionEnabled(false);
+      cy.autoungrabify(false);
+      cy.userPanningEnabled(true);
+      cy.userZoomingEnabled(true);
+    } catch {}
+
 
     cy.style()
       .selector("node")
@@ -1448,23 +1667,19 @@ async function ensureGraph() {
         "curve-style": "bezier",
         "target-arrow-shape": "triangle",
         "arrow-scale": 0.9,
-        "line-color": "rgba(148,163,184,.55)",
-        "target-arrow-color": "rgba(148,163,184,.75)",
         "label": "data(count)",
-        "color": "rgba(148,163,184,.85)",
+        "color": "rgba(226,232,240,.9)",
         "font-size": 9,
         "text-rotation": "autorotate",
         "width": (e) => edgeWidth(e.data("count")),
+        "line-color": (e) => edgeColor(e.data("dir"), e.data("count")),
+        "target-arrow-color": (e) => edgeColor(e.data("dir"), e.data("count")),
       })
-      .selector('edge[dir="IN"]')
+      .selector(".sel")
       .style({
-        "line-color": "rgba(34,197,94,.55)",
-        "target-arrow-color": "rgba(34,197,94,.75)",
-      })
-      .selector('edge[dir="OUT"]')
-      .style({
-        "line-color": "rgba(59,130,246,.55)",
-        "target-arrow-color": "rgba(59,130,246,.75)",
+        "opacity": 1,
+        "border-color": "rgba(255,255,255,.92)",
+        "border-width": 2,
       })
       .selector(".dim")
       .style({ "opacity": 0.12 })
@@ -1477,20 +1692,35 @@ async function ensureGraph() {
       .update();
 
     cy.on("tap", "node", (evt) => {
+      cy.elements().unselect();
+      evt.target.select();
+
       const id = evt.target.data("id");
-      const phone = getObjectivePhoneIndividual();
-      if (!id || id === phone) {
-        selectedGraphContact.value = "";
-        return;
-      }
       selectedGraphContact.value = id;
-      contactEventsPage.value = 0;
+      selectedGraphEdgeId.value = "";
+      loadContactEvents(id);
     });
 
-  } catch (e) {
-    graphError.value = "Para el grafo i2 debes instalar: npm i cytoscape cytoscape-cose-bilkent";
-  }
-}
+    cy.on("tap", "edge", (evt) => {
+      cy.elements().unselect();
+      evt.target.select();
+
+      const e = evt.target;
+      selectedGraphEdgeId.value = e.data("id") || e.id();
+      selectedGraphContact.value = "";
+
+      // si quieres mostrar conteo también al click del edge:
+      selectedGraphStats.value = {
+        total: Number(e.data("total") || e.data("count") || 0),
+        inCount: Number(e.data("inCount") || 0),
+        outCount: Number(e.data("outCount") || 0),
+      };
+    });
+
+    } catch (e) {
+        graphError.value = "Para el grafo i2 debes instalar: npm i cytoscape cytoscape-cose-bilkent";
+      }
+    }
 
 function applyGraphData() {
   if (!cy) return;
@@ -1534,6 +1764,34 @@ function fitGraph() {
   try { cy?.fit(undefined, 40); } catch {}
 }
 
+function toggleGraphExpand() {
+  graphExpanded.value = !graphExpanded.value;
+  // al cambiar el tamaño del contenedor, cytoscape requiere resize
+  requestAnimationFrame(() => {
+    try { cy?.resize(); } catch {}
+    fitGraph();
+  });
+}
+
+async function captureGraphShot() {
+  graphShot.value = null;
+  await ensureGraph();
+  try {
+    graphShot.value = cy?.png?.({ output: "base64uri", full: true, scale: 2, bg: "#0b1220" }) || null;
+  } catch {
+    graphShot.value = null;
+  }
+}
+
+async function takeGraphScreenshotDataUrl() {
+  // Para el PDF: si el usuario ya capturó, usamos ese. Si no, generamos al vuelo.
+  if (graphShot.value) return graphShot.value;
+  await captureGraphShot();
+  return graphShot.value;
+}
+
+
+
 function highlightGraphSearch() {
   if (!cy) return;
   const q = String(graphSearch.value || "").trim();
@@ -1557,6 +1815,38 @@ const contactEventsAll = computed(() => {
     .filter(r => String(otherOfFlow(r)) === String(other))
     .sort((a, b) => new Date(a.call_ts) - new Date(b.call_ts));
 });
+
+
+const selectedGraphStats = computed(() => {
+  const other = selectedGraphContact.value;
+  const phone = getObjectivePhoneIndividual();
+  if (!other || !phone) return null;
+
+  let inCount = 0;
+  let outCount = 0;
+  let first_ts = null;
+  let last_ts = null;
+
+  for (const r of (flowsTimeline.value || [])) {
+    const o = String(otherOfFlow(r) || "");
+    if (o !== String(other)) continue;
+
+    const dir = String(r.direction || "").toUpperCase();
+    if (dir === "IN") inCount += 1;
+    else if (dir === "OUT") outCount += 1;
+    else outCount += 1;
+
+    const ts = r.call_ts || r.ts || null;
+    if (ts) {
+      if (!first_ts || new Date(ts) < new Date(first_ts)) first_ts = ts;
+      if (!last_ts || new Date(ts) > new Date(last_ts)) last_ts = ts;
+    }
+  }
+
+  return { other, total: inCount + outCount, inCount, outCount, first_ts, last_ts };
+});
+
+
 
 const contactEventsTotalPages = computed(() => {
   const n = contactEventsAll.value.length;
@@ -1848,6 +2138,17 @@ function clearPickedGroup(g) {
     if (fileElG2.value) fileElG2.value.value = "";
   }
 }
+
+function onGraphKeyDown(e) {
+  const key = String(e.key || "");
+  if (key !== "Delete" && key !== "Backspace") return;
+  if (!cy) return;
+  if (cy.$(":selected").length === 0) return;
+
+  e.preventDefault();
+  deleteSelectedFromGraph(); // solo lo oculta del grafo
+}
+
 
 /**
  * Upload XDR con soporte de group=1|2 para análisis grupal.
@@ -2366,11 +2667,18 @@ function plotPlacesOnMap(rows) {
 
   const points = (rows || [])
     .filter((r) => Number.isFinite(Number(r.lat)) && Number.isFinite(Number(r.lon)))
-    .slice(0, 50);
+    .slice(0, 250);
 
-  for (const r of points) {
+  for (const r0 of points) {
+    const r = {
+      ...r0,
+      lac: r0.lac ?? r0.lac_tac ?? "", // ✅ soporte ambos nombres
+      cell_id: r0.cell_id ?? r0.cell_key ?? "",
+    };
+
     const pt = new ArcPoint({ longitude: Number(r.lon), latitude: Number(r.lat) });
-    const size = Math.max(8, Math.min(22, 8 + Math.log10(Number(r.hits || 1)) * 10));
+    const hitsNum = Number(r.hits || 1);
+    const size = Math.max(10, Math.min(24, 10 + Math.log10(hitsNum) * 10));
 
     const g = new ArcGraphic({
       geometry: pt,
@@ -2379,19 +2687,37 @@ function plotPlacesOnMap(rows) {
         type: "simple-marker",
         style: "circle",
         size,
-        color: [34, 211, 238, 0.55],
-        outline: { color: [255, 255, 255, 0.35], width: 1 },
+        color: [59, 130, 246, 0.85], // azul más visible
+        outline: { color: [255, 255, 255, 0.98], width: 2.5 }, // borde blanco más fuerte
       },
       popupTemplate: {
         title: "{lugar}",
-        content: `Cell: {cell_key}<br/>Eventos: {hits}`,
+        content: `CELL: {cell_id}<br/>LAC: {lac}<br/>Reportes: {hits}`,
       },
     });
     graphicsLayer.add(g);
+
+    // etiqueta hits
+    const txt = hitsNum > 999 ? "999+" : String(hitsNum);
+    const lbl = new ArcGraphic({
+      geometry: pt,
+      attributes: r,
+      symbol: {
+        type: "text",
+        text: txt,
+        color: [255, 255, 255, 0.95],
+        haloColor: [0, 0, 0, 0.70],
+        haloSize: 1.5,
+        font: { size: 10, family: "sans-serif", weight: "bold" },
+        yoffset: -(size / 2) - 6, // ✅ arriba del punto
+      },
+    });
+    graphicsLayer.add(lbl);
   }
 
   if (points.length) zoomToPlaces();
 }
+
 
 function zoomToPlaces() {
   if (!mapView || !graphicsLayer) return;
@@ -2537,8 +2863,13 @@ async function downloadReportIndividual() {
       timeseriesChart: timeseriesChart?.toBase64Image?.() || null,
       contactsChart: contactsChart?.toBase64Image?.() || null,
       placesChart: placesChart?.toBase64Image?.() || null,
-      mapScreenshot: await takeMapScreenshotDataUrl(),
+      routineHeatmap: buildRoutineSvgDataUrl(),
+      // usa el pantallazo del botón si existe, si no genera uno
+      graphScreenshot: graphShot.value || (await takeGraphScreenshotDataUrl()),
+      // usa el pantallazo capturado del mapa si existe, si no intenta capturarlo (si hay mapa)
+      mapScreenshot: mapShot.value || (await captureMapShot()) || null,
     };
+
 
     const dateRange = {
       min_ts: objectiveSummary.value?.kpis?.min_ts || null,
@@ -2655,13 +2986,10 @@ watch(
 watch(
   () => flowsTimeline.value,
   async () => {
-    // expand por defecto los días visibles
-    const arr = visibleMovementDays.value || [];
-    if (arr.length) {
-      const set = new Set(expandedDays.value);
-      for (const d of arr) set.add(d.dateKey);
-      expandedDays.value = set;
-    }
+    // ✅ Dejar todo colapsado por defecto (usuario decide qué días abrir)
+    expandedDays.value = new Set();
+    openStopId.value = "";
+    stopPage.value = 0;
 
     // grafo
     await nextTick();
@@ -2671,6 +2999,8 @@ watch(
 );
 
 watch(() => graphSearch.value, () => { try { highlightGraphSearch(); } catch {} });
+
+watch(() => graphMinInteractions.value, () => { try { applyGraphData(); } catch {} });
 
 // -----------------
 watch(
@@ -3058,6 +3388,7 @@ th{ color: var(--muted); font-weight: 900; }
   overflow:hidden;
 }
 .graphEl{ width: 100%; height: 360px; }
+.graphBox.expanded .graphEl{ height: calc(72vh - 16px); }
 .miniDetail{ margin-top: 10px; }
 .miniTitle{ font-weight: 900; margin-bottom: 6px; }
 
@@ -3111,5 +3442,65 @@ th{ color: var(--muted); font-weight: 900; }
 .stopMeta{ display:flex; gap:8px; flex-wrap:wrap; margin-top: 6px; }
 .stopBottom{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top: 8px; }
 .stopDetail{ margin-top: 10px; }
+
+
+/* ===== I2 Graph UX ===== */
+.miniNum{
+  width: 84px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(15,23,42,.55);
+  color: #e2e8f0;
+  outline: none;
+}
+.miniNum:focus{ border-color: rgba(34,211,238,.5); box-shadow: 0 0 0 3px rgba(34,211,238,.12); }
+
+.graphBox{
+  position: relative;
+  height: 420px;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(2,6,23,.35);
+}
+.graphEl{ width: 100%; height: 100%; }
+
+.graphBox.expanded{
+  position: fixed;
+  inset: 12px;
+  height: auto;
+  z-index: 9999;
+  box-shadow: 0 30px 120px rgba(0,0,0,.6);
+  border: 1px solid rgba(255,255,255,.14);
+}
+
+.shotInfo{
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 14px;
+  border: 1px dashed rgba(255,255,255,.16);
+  background: rgba(15,23,42,.35);
+}
+.shotImg{
+  margin-top: 8px;
+  width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.10);
+}
+
+/* Cytoscape selected highlight */
+:deep(.cytoscape-container) { outline: none; }
+
+/* Heatmap: un poco más grande y legible */
+.heatCell{
+  width: 16px !important;
+  height: 14px !important;
+  border-radius: 4px !important;
+}
+.heatIcon{ font-size: 12px; line-height: 1; }
+.heatBases{ margin-top: 8px; display:flex; flex-direction:column; gap:4px; }
 
 </style>
