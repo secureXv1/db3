@@ -330,7 +330,7 @@
                   <span class="dot dotDay" style="margin-left:14px"></span>
                   <span class="muted tiny">Actividad diurna</span>
                   <span class="muted tiny" style="margin-left:14px; opacity:.85">
-                    La intensidad representa volumen de llamadas/mensajes.
+                    La intensidad representa la cantidad de días con actividad en esa hora.
                   </span>
                 </div>
 
@@ -372,6 +372,10 @@
                   <span class="muted tiny" style="margin-left:8px">Min interacciones</span>
                   <input class="miniNum" type="number" min="1" v-model.number="graphMinInteractions" @change="applyGraphData()" />
 
+                  <button class="ghost" @click="resetGraphHidden" :disabled="!hasHiddenGraph">
+                    Restaurar
+                  </button>
+
                   <button class="ghost" @click="toggleGraphExpand()">
                     {{ graphExpanded ? 'Salir' : 'Expandir' }}
                   </button>
@@ -381,6 +385,7 @@
 
               <div class="field" style="margin-top:8px">
                 <input v-model.trim="graphSearch" placeholder="Buscar número..." @input="highlightGraphSearch" />
+                <div class="muted tiny">Tip: selecciona un nodo/enlace y presiona <b>Supr</b> para ocultarlo (solo del grafo).</div>
               </div>
 
             <div class="graphBox" :class="{ expanded: graphExpanded }">
@@ -452,6 +457,24 @@
                 {{ timelineExpanded ? 'Contraer' : 'Expandir' }}
               </button>
             </div>
+          </div>
+
+          <div class="dayScroller" v-if="movementDays.length">
+            <button
+              v-for="d in movementDays"
+              :key="d.dateKey"
+              class="dayChip"
+              :class="{ on: expandedDays.has(d.dateKey) }"
+              @click="toggleDay(d.dateKey)"
+              :title="d.dateLabel"
+            >
+              {{ d.dateLabel }}
+            </button>
+            <div class="muted tiny" style="margin-left:auto">Selecciona fechas para ver movimientos</div>
+          </div>
+
+          <div class="muted small" v-if="!timelineExpanded && !visibleMovementDays.length" style="margin-top:10px">
+            Selecciona una fecha en la barra para desplegar sus movimientos.
           </div>
 
           <div class="dayBlock" v-for="day in visibleMovementDays" :key="day.dateKey">
@@ -531,33 +554,11 @@
           </div>
         </div>
 
-<!-- Gráficas -->
-        <div class="card" v-if="false && readyForCharts">
-          <div class="cardHead">
-            <div>
-              <div class="title">Gráficas</div>
-              <div class="muted small">
-                Click en barras/puntos para abrir detalles.
-              </div>
-            </div>
-          </div>
-
-          <div class="charts3">
-            <div class="chartBox">
-              <div class="muted small" style="margin-bottom:6px">Línea de tiempo (movimientos)</div>
-              <canvas ref="chartTimeseriesEl" height="140"></canvas>
-            </div>
-
-            <div class="chartBox">
-              <div class="muted small" style="margin-bottom:6px">Top contactos (tipo i2)</div>
-              <canvas ref="chartContactsEl" height="140"></canvas>
-            </div>
-
-            <div class="chartBox">
-              <div class="muted small" style="margin-bottom:6px">Top lugares (presencia)</div>
-              <canvas ref="chartPlacesEl" height="140"></canvas>
-            </div>
-          </div>
+<!-- Gráficas (offscreen: se usan para el PDF, no se muestran en UI) -->
+        <div class="offscreen" v-if="smartReady" aria-hidden="true">
+          <canvas ref="chartTimeseriesEl" height="200"></canvas>
+          <canvas ref="chartContactsEl" height="200"></canvas>
+          <canvas ref="chartPlacesEl" height="200"></canvas>
         </div>
 
         <!-- Mapa ArcGIS -->
@@ -572,6 +573,11 @@
             <div class="actions">
               <button class="ghost" @click="zoomToPlaces" :disabled="!mapReady">Ajustar vista</button>
             </div>
+          </div>
+
+          <div class="warn" v-if="!mapReady" style="margin-top:10px">
+            No se pudo cargar el mapa. Verifica que <b>@arcgis/core</b> esté instalado y que cargues su CSS.
+            <div class="muted tiny" v-if="mapError">{{ mapError }}</div>
           </div>
 
           <div class="mapWrap" ref="mapEl"></div>
@@ -1029,11 +1035,14 @@ const graphMinInteractions = ref(5);
 const graphShot = ref(null);
 
 const selectedGraphContact = ref("");
+const selectedGraphEdgeId = ref("");
+const hiddenGraphNodes = ref(new Set());
+const hiddenGraphEdges = ref(new Set());
 const contactEventsPage = ref(0);
 const contactEventsPageSize = 25;
 
 // timeline amigable
-const timelineExpanded = ref(true);
+const timelineExpanded = ref(false);
 const expandedDays = ref(new Set());
 const openStopId = ref("");
 const stopPage = ref(0);
@@ -1206,8 +1215,9 @@ const routineRows = computed(() => {
   const rows = flowsTimeline.value || [];
   if (!rows.length) return [];
 
-  // acumula por ubicación y hora
-  const byLoc = new Map(); // key -> {meta, hours[24], total}
+  // Rutina = FRECUENCIA por DÍAS (no por cantidad de llamadas)
+  // Para cada antena/celda: contamos cuántos días aparece en cada hora.
+  const byLoc = new Map();
   for (const r of rows) {
     const ts = r.call_ts;
     if (!ts) continue;
@@ -1215,6 +1225,7 @@ const routineRows = computed(() => {
     if (Number.isNaN(d.getTime())) continue;
 
     const h = d.getHours();
+    const dk = toLocalDateKey(d);
     const loc = flowLoc(r);
 
     if (!byLoc.has(loc.key)) {
@@ -1224,21 +1235,36 @@ const routineRows = computed(() => {
         cell: loc.cell,
         lac: loc.lac,
         antennaNum: loc.antennaNum,
-        hours: Array.from({ length: 24 }, () => 0),
-        total: 0,
-        nightTotal: 0,
+        hoursSet: Array.from({ length: 24 }, () => new Set()),
+        daySet: new Set(),
+        nightDaySet: new Set(),
+        eventsTotal: 0,
       });
     }
 
     const obj = byLoc.get(loc.key);
-    obj.hours[h] += 1;
-    obj.total += 1;
-    if (isNightHour(h)) obj.nightTotal += 1;
+    obj.eventsTotal += 1;
+    obj.hoursSet[h].add(dk);
+    obj.daySet.add(dk);
+    if (isNightHour(h)) obj.nightDaySet.add(dk);
   }
 
-  // top 5 por total
-  const arr = Array.from(byLoc.values()).sort((a, b) => b.total - a.total).slice(0, 5);
-  return arr;
+  const arr = Array.from(byLoc.values()).map(o => ({
+    key: o.key,
+    name: o.name,
+    cell: o.cell,
+    lac: o.lac,
+    antennaNum: o.antennaNum,
+    hours: o.hoursSet.map(s => s.size),
+    totalDays: o.daySet.size,
+    nightDays: o.nightDaySet.size,
+    eventsTotal: o.eventsTotal,
+  }));
+
+  // top 5 por días (y si empata, por total de eventos)
+  return arr
+    .sort((a, b) => (b.totalDays - a.totalDays) || (b.nightDays - a.nightDays) || (b.eventsTotal - a.eventsTotal))
+    .slice(0, 5);
 });
 
 const routineMax = computed(() => {
@@ -1343,9 +1369,9 @@ function buildRoutineSvgDataUrl() {
 const pernoctaBase = computed(() => {
   const arr = routineRows.value || [];
   if (!arr.length) return null;
-  const best = [...arr].sort((a, b) => (b.nightTotal - a.nightTotal) || (b.total - a.total))[0];
-  if (!best || best.nightTotal <= 0) return null;
-  return { name: best.name, cell: best.cell, lac: best.lac, key: best.key };
+  const best = [...arr].sort((a, b) => (b.nightDays - a.nightDays) || (b.totalDays - a.totalDays))[0];
+  if (!best || best.nightDays <= 0) return null;
+  return { name: best.name, cell: best.cell, lac: best.lac, key: best.key, days: best.nightDays };
 });
 
 
@@ -1360,9 +1386,9 @@ const diurnaBase = computed(() => {
     return s;
   };
 
-  const best = [...arr].sort((a, b) => (daySum(b) - daySum(a)) || (b.total - a.total))[0];
+  const best = [...arr].sort((a, b) => (daySum(b) - daySum(a)) || (b.totalDays - a.totalDays))[0];
   if (!best || daySum(best) <= 0) return null;
-  return { name: best.name, cell: best.cell, lac: best.lac, key: best.key };
+  return { name: best.name, cell: best.cell, lac: best.lac, key: best.key, days: best.totalDays };
 });
 
 // -----------------
@@ -1442,8 +1468,9 @@ const movementDays = computed(() => buildStops());
 const visibleMovementDays = computed(() => {
   const arr = movementDays.value || [];
   if (timelineExpanded.value) return arr;
-  // por defecto muestra últimos 2 días disponibles
-  return arr.slice(Math.max(0, arr.length - 2));
+
+  const set = expandedDays.value || new Set();
+  return arr.filter(d => set.has(d.dateKey));
 });
 
 function toggleDay(dk) {
@@ -1515,12 +1542,12 @@ function buildGraphElements() {
 
     const ts = r.call_ts || r.ts || r.datetime || r.fecha || null;
     const cur = stats.get(other) || { other, inCount: 0, outCount: 0, first_ts: ts, last_ts: ts };
+
     if (dir === "IN") cur.inCount += 1;
     else if (dir === "OUT") cur.outCount += 1;
     else {
       // fallback: si no viene direction consistente, inferir por a_number/b_number
       const a = String(r.a_number || r.from || r.origin || "").trim();
-      const b = String(r.b_number || r.to || r.dest || "").trim();
       if (a && String(a) === String(other)) cur.inCount += 1;
       else cur.outCount += 1;
     }
@@ -1541,39 +1568,64 @@ function buildGraphElements() {
     const total = s.inCount + s.outCount;
     if (total < minTotal) continue;
 
-    nodes.set(s.other, { data: { id: s.other, label: s.other, type: "contact", total, inCount: s.inCount, outCount: s.outCount } });
+    // ✅ si el usuario lo eliminó del grafo, no lo volvemos a dibujar
+    if (hiddenGraphNodes.value.has(s.other)) continue;
+
+    nodes.set(s.other, {
+      data: {
+        id: s.other,
+        label: s.other,
+        type: "contact",
+        total,
+        inCount: s.inCount,
+        outCount: s.outCount,
+      },
+    });
+
+    const isPair = s.inCount > 0 && s.outCount > 0;
 
     if (s.outCount > 0) {
-      edges.push({
-        data: {
-          id: `OUT:${phone}->${s.other}`,
-          source: phone,
-          target: s.other,
-          dir: "OUT",
-          count: s.outCount,
-          total,
-          inCount: s.inCount,
-          outCount: s.outCount,
-          first_ts: s.first_ts,
-          last_ts: s.last_ts,
-        },
-      });
+      const id = `OUT:${phone}->${s.other}`;
+      if (!hiddenGraphEdges.value.has(id)) {
+        edges.push({
+          data: {
+            id,
+            source: phone,
+            target: s.other,
+            dir: "OUT",
+            count: s.outCount,
+            total,
+            inCount: s.inCount,
+            outCount: s.outCount,
+            first_ts: s.first_ts,
+            last_ts: s.last_ts,
+            pair: isPair,
+            curve: isPair ? "pos" : "flat",
+          },
+        });
+      }
     }
+
     if (s.inCount > 0) {
-      edges.push({
-        data: {
-          id: `IN:${s.other}->${phone}`,
-          source: s.other,
-          target: phone,
-          dir: "IN",
-          count: s.inCount,
-          total,
-          inCount: s.inCount,
-          outCount: s.outCount,
-          first_ts: s.first_ts,
-          last_ts: s.last_ts,
-        },
-      });
+      const id = `IN:${s.other}->${phone}`;
+      if (!hiddenGraphEdges.value.has(id)) {
+        edges.push({
+          data: {
+            id,
+            source: s.other,
+            target: phone,
+            dir: "IN",
+            count: s.inCount,
+            total,
+            inCount: s.inCount,
+            outCount: s.outCount,
+            first_ts: s.first_ts,
+            last_ts: s.last_ts,
+            pair: isPair,
+            curve: isPair ? "neg" : "flat",
+          },
+        });
+      }
     }
   }
 
@@ -1581,24 +1633,10 @@ function buildGraphElements() {
 }
 
 
-function edgeColor(dir, count) {
-  // Color según cantidad + dirección (IN verde, OUT azul). A más vínculos, más intenso.
-  const c = Math.max(1, Number(count || 1));
-  const intensity = Math.min(1, Math.log2(c) / 6); // 0..1 aprox
+function edgeColor(dir) {
+  // ✅ Solo 2 colores: IN (verde) y OUT (azul)
   const isIn = String(dir || "").toUpperCase() === "IN";
-  // base RGB
-  const base = isIn ? [34, 197, 94] : [59, 130, 246];
-  // mezcla hacia naranja en alta intensidad para resaltar
-  const hot = [251, 146, 60];
-  const mix = (a, b, t) => Math.round(a + (b - a) * t);
-  const t = Math.max(0, intensity - 0.55) / 0.45; // empieza a "calentar" después de cierto umbral
-  const rgb = [
-    mix(base[0], hot[0], t),
-    mix(base[1], hot[1], t),
-    mix(base[2], hot[2], t),
-  ];
-  const alpha = 0.25 + intensity * 0.65;
-  return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha.toFixed(3)})`;
+  return isIn ? "rgba(34,197,94,.88)" : "rgba(59,130,246,.88)";
 }
 
 function edgeWidth(count) {
@@ -1672,8 +1710,18 @@ async function ensureGraph() {
         "font-size": 9,
         "text-rotation": "autorotate",
         "width": (e) => edgeWidth(e.data("count")),
-        "line-color": (e) => edgeColor(e.data("dir"), e.data("count")),
-        "target-arrow-color": (e) => edgeColor(e.data("dir"), e.data("count")),
+        "line-color": (e) => edgeColor(e.data("dir")),
+        "target-arrow-color": (e) => edgeColor(e.data("dir")),
+      })
+      .selector('edge[pair = "true"][curve = "pos"]')
+      .style({
+        "control-point-distance": 38,
+        "control-point-weight": 0.5,
+      })
+      .selector('edge[pair = "true"][curve = "neg"]')
+      .style({
+        "control-point-distance": -38,
+        "control-point-weight": 0.5,
       })
       .selector(".sel")
       .style({
@@ -1846,6 +1894,9 @@ const selectedGraphStats = computed(() => {
   return { other, total: inCount + outCount, inCount, outCount, first_ts, last_ts };
 });
 
+const hasHiddenGraph = computed(() => (hiddenGraphNodes.value?.size || 0) + (hiddenGraphEdges.value?.size || 0) > 0);
+
+
 
 
 const contactEventsTotalPages = computed(() => {
@@ -1886,6 +1937,8 @@ let graphicsLayer = null;
 let ArcGraphic = null;
 let ArcPoint = null;
 const mapReady = ref(false);
+const mapShot = ref(null);
+const mapError = ref("");
 
 // Modal detalles
 const detailModal = ref({
@@ -2147,6 +2200,46 @@ function onGraphKeyDown(e) {
 
   e.preventDefault();
   deleteSelectedFromGraph(); // solo lo oculta del grafo
+}
+
+function deleteSelectedFromGraph() {
+  if (!cy) return;
+  const sel = cy.$(":selected");
+  if (!sel?.length) return;
+
+  sel.forEach((el) => {
+    const id = el.data("id") || el.id();
+
+    if (el.isNode?.()) {
+      hiddenGraphNodes.value.add(String(id));
+      // también ocultamos sus edges conectados
+      try {
+        el.connectedEdges().forEach((e) => hiddenGraphEdges.value.add(String(e.data("id") || e.id())));
+      } catch {}
+    } else {
+      hiddenGraphEdges.value.add(String(id));
+    }
+
+    try { el.remove(); } catch {}
+  });
+
+  selectedGraphContact.value = "";
+  selectedGraphEdgeId.value = "";
+}
+
+function resetGraphHidden() {
+  hiddenGraphNodes.value = new Set();
+  hiddenGraphEdges.value = new Set();
+  selectedGraphContact.value = "";
+  selectedGraphEdgeId.value = "";
+  try { applyGraphData(); } catch {}
+}
+
+async function captureMapShot() {
+  mapShot.value = null;
+  await ensureMap();
+  mapShot.value = await takeMapScreenshotDataUrl();
+  return mapShot.value;
 }
 
 
@@ -2652,8 +2745,8 @@ async function ensureMap() {
 
     mapReady.value = true;
   } catch (e) {
-    // Si no hay arcgis/core instalado, no bloqueamos el módulo
     mapReady.value = false;
+    mapError.value = String(e?.message || e || "");
   }
 }
 
@@ -2662,6 +2755,8 @@ function clearMapGraphics() {
 }
 
 function plotPlacesOnMap(rows) {
+  // si cambian los puntos, el pantallazo anterior ya no sirve
+  try { mapShot.value = null; } catch {}
   if (!mapView || !graphicsLayer || !ArcGraphic || !ArcPoint) return;
   clearMapGraphics();
 
@@ -2858,6 +2953,16 @@ async function downloadReportIndividual() {
   error.value = "";
 
   try {
+    // Asegura que los canvas offscreen existan y los charts estén renderizados
+    await nextTick();
+    try { if (!timeseriesChart) renderTimeseriesChart(); } catch {}
+    try { if (!contactsChart) renderContactsChart(); } catch {}
+    try { if (!placesChart) renderPlacesChart(); } catch {}
+
+    // Asegura mapa/grafo (para pantallazos)
+    try { await ensureMap(); } catch {}
+    try { await ensureGraph(); applyGraphData(); } catch {}
+
     // Genera imágenes de charts
     const images = {
       timeseriesChart: timeseriesChart?.toBase64Image?.() || null,
@@ -2884,6 +2989,13 @@ async function downloadReportIndividual() {
       objectives: [{ phone, confidence: objectiveInfo.value?.confidence ?? 0 }],
       dateRange,
       images,
+      analysis: {
+        kpis: objectiveSummary.value?.kpis || null,
+        baseNocturna: pernoctaBase.value || null,
+        baseDiurna: diurnaBase.value || null,
+        topContacts: (contactsTop.value || []).slice(0, 10),
+        topPlaces: (placesTop.value || []).slice(0, 10),
+      },
     };
 
     const r = await fetch(`${API}/api/telco/runs/${runId.value}/report/pdf`, {
@@ -2942,6 +3054,13 @@ async function downloadReportGroup() {
         to: filters.value.to || null,
       },
       images,
+      analysis: {
+        kpis: objectiveSummary.value?.kpis || null,
+        baseNocturna: pernoctaBase.value || null,
+        baseDiurna: diurnaBase.value || null,
+        topContacts: (contactsTop.value || []).slice(0, 10),
+        topPlaces: (placesTop.value || []).slice(0, 10),
+      },
     };
 
     const r = await fetch(`${API}/api/telco/runs/${runId.value}/report/pdf`, {
@@ -3010,7 +3129,12 @@ watch(
   }
 );
 
+onMounted(() => {
+  window.addEventListener("keydown", onGraphKeyDown);
+});
+
 onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onGraphKeyDown);
   destroyCharts();
   try { mapView?.destroy(); } catch {}
   try { cy?.destroy(); } catch {}
@@ -3261,6 +3385,38 @@ th{ color: var(--muted); font-weight: 900; }
   border: 1px solid rgba(255,255,255,.10);
 }
 
+
+.offscreen{
+  position: absolute;
+  left: -99999px;
+  top: -99999px;
+  width: 1200px;
+  height: 800px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.dayScroller{
+  margin-top: 10px;
+  display:flex;
+  gap: 8px;
+  overflow:auto;
+  padding-bottom: 6px;
+}
+.dayChip{
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.04);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.dayChip.on{
+  border-color: rgba(34,211,238,.55);
+  background: rgba(34,211,238,.12);
+}
+
 /* Modal */
 .modalOverlay{
   position: fixed;
@@ -3380,15 +3536,6 @@ th{ color: var(--muted); font-weight: 900; }
 .dotNight{ background: rgba(99,102,241,.75); }
 .dotDay{ background: rgba(34,211,238,.75); }
 
-.graphBox{
-  border: 1px solid rgba(255,255,255,.10);
-  border-radius: 14px;
-  background: rgba(0,0,0,.14);
-  min-height: 360px;
-  overflow:hidden;
-}
-.graphEl{ width: 100%; height: 360px; }
-.graphBox.expanded .graphEl{ height: calc(72vh - 16px); }
 .miniDetail{ margin-top: 10px; }
 .miniTitle{ font-weight: 900; margin-bottom: 6px; }
 
@@ -3467,12 +3614,9 @@ th{ color: var(--muted); font-weight: 900; }
 .graphEl{ width: 100%; height: 100%; }
 
 .graphBox.expanded{
-  position: fixed;
-  inset: 12px;
-  height: auto;
-  z-index: 9999;
-  box-shadow: 0 30px 120px rgba(0,0,0,.6);
+  height: 72vh;
   border: 1px solid rgba(255,255,255,.14);
+  box-shadow: 0 18px 70px rgba(0,0,0,.55);
 }
 
 .shotInfo{

@@ -1426,33 +1426,51 @@ router.get("/runs/:runId/group/coincidences", authRequired, async (req, res) => 
  * }
  */
 router.post("/runs/:runId/report/pdf", authRequired, async (req, res) => {
+  const runId = Number(req.params.runId);
+  if (!Number.isFinite(runId)) return res.status(400).json({ ok: false, error: "runId inválido" });
+
+  const body = req.body || {};
+  const runName = String(body.runName || "").trim() || `RUN ${runId}`;
+  const mode = String(body.mode || "individual");
+  const objectives = Array.isArray(body.objectives) ? body.objectives : [];
+  const dateRange = body.dateRange || {};
+  const images = body.images || {};
+  const analysis = body.analysis || {};
+
+  // Helper: dataURL -> Buffer
+  const dataUrlToBuffer = (dataUrl) => {
+    if (!dataUrl || typeof dataUrl !== "string") return null;
+    const m = dataUrl.match(/^data:(.+);base64,(.*)$/);
+    if (!m) return null;
+    return Buffer.from(m[2], "base64");
+  };
+
+  let doc = null;
+
   try {
-    const runId = Number(req.params.runId);
-    if (!Number.isFinite(runId)) return res.status(400).json({ ok: false, error: "runId inválido" });
-
-    const body = req.body || {};
-    const runName = String(body.runName || "").trim() || `RUN ${runId}`;
-    const mode = String(body.mode || "individual");
-    const objectives = Array.isArray(body.objectives) ? body.objectives : [];
-    const dateRange = body.dateRange || {};
-    const images = body.images || {};
-
-    // Helper: dataURL -> Buffer
-    const dataUrlToBuffer = (dataUrl) => {
-      if (!dataUrl || typeof dataUrl !== "string") return null;
-      const m = dataUrl.match(/^data:(.+);base64,(.*)$/);
-      if (!m) return null;
-      return Buffer.from(m[2], "base64");
-    };
-
-    // Config PDF
+    // IMPORTANTE:
+    // - Si ya empezamos a streamear PDF (doc.pipe(res)), NO podemos responder JSON.
+    // - Si ocurre un error después de pipe, destruimos el response y cerramos el doc.
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="${`Analisis_solicitud_${runName}`.replace(/[^\w\-(). ]+/g, "_")}.pdf"`
     );
 
-    const doc = new PDFDocument({ size: "A4", margin: 36 });
+    doc = new PDFDocument({ size: "A4", margin: 36 });
+
+    // Si el cliente cierra la conexión, detenemos el PDF para evitar "write after end"
+    res.on("close", () => {
+      try { doc?.end(); } catch {}
+    });
+
+    // Si PDFKit emite error, destruimos la respuesta
+    doc.on("error", (err) => {
+      console.error("[PDF] error:", err);
+      try { res.destroy(err); } catch {}
+      try { doc.end(); } catch {}
+    });
+
     doc.pipe(res);
 
     // Encabezado
@@ -1473,20 +1491,94 @@ router.post("/runs/:runId/report/pdf", authRequired, async (req, res) => {
     const maxTs = dateRange.max_ts || dateRange.to || "-";
     doc.font("Helvetica-Bold").text("Rango de registros:");
     doc.font("Helvetica").text(`${minTs}  →  ${maxTs}`);
-    doc.moveDown(0.8);
+
+    // Resumen de análisis (texto)
+    try {
+      doc.moveDown(0.6);
+      doc.fontSize(12).font("Helvetica-Bold").fillColor("#000").text("Resumen de análisis");
+      doc.font("Helvetica");
+
+      const kpis = analysis.kpis || {};
+      const total = Number(kpis.total_calls || kpis.total || 0);
+      const inC = Number(kpis.total_in || kpis.in || 0);
+      const outC = Number(kpis.total_out || kpis.out || 0);
+      if (total || inC || outC) {
+        doc.text(`• Total registros: ${total || "-"} (IN: ${inC || "-"} / OUT: ${outC || "-"})`);
+      }
+
+      const bn = analysis.baseNocturna || null;
+      if (bn?.name) {
+        doc.text(
+          `• Base nocturna: ${bn.name}` +
+          `${bn.cell ? " (CELL " + bn.cell + ")" : ""}` +
+          `${bn.lac ? " (LAC " + bn.lac + ")" : ""}` +
+          ` · días: ${bn.days ?? "-"}`
+        );
+      }
+      const bd = analysis.baseDiurna || null;
+      if (bd?.name) {
+        doc.text(
+          `• Base diurna: ${bd.name}` +
+          `${bd.cell ? " (CELL " + bd.cell + ")" : ""}` +
+          `${bd.lac ? " (LAC " + bd.lac + ")" : ""}` +
+          ` · días: ${bd.days ?? "-"}`
+        );
+      }
+
+      const topContacts = Array.isArray(analysis.topContacts) ? analysis.topContacts.slice(0, 10) : [];
+      if (topContacts.length) {
+        doc.moveDown(0.3);
+        doc.font("Helvetica-Bold").text("Top contactos");
+        doc.font("Helvetica");
+        for (const c of topContacts) {
+          const other = c.other || c.phone || "-";
+          const calls = c.calls ?? c.total ?? "-";
+          const inx = c.in_calls ?? c.inCount ?? "";
+          const outx = c.out_calls ?? c.outCount ?? "";
+          const dir = (inx !== "" || outx !== "") ? ` (IN ${inx || 0} / OUT ${outx || 0})` : "";
+          doc.text(`• ${other}: ${calls}${dir}`);
+        }
+      }
+
+      const topPlaces = Array.isArray(analysis.topPlaces) ? analysis.topPlaces.slice(0, 10) : [];
+      if (topPlaces.length) {
+        doc.moveDown(0.3);
+        doc.font("Helvetica-Bold").text("Top lugares");
+        doc.font("Helvetica");
+        for (const pl of topPlaces) {
+          const name = pl.lugar || pl.name || "-";
+          const hits = pl.hits ?? pl.total_hits ?? "-";
+          const cell = pl.cell_id ?? pl.cell_key ?? "";
+          const lac = pl.lac ?? pl.lac_tac ?? "";
+          doc.text(`• ${name}: ${hits}${cell ? " · CELL " + cell : ""}${lac ? " · LAC " + lac : ""}`);
+        }
+      }
+
+      doc.moveDown(0.6);
+    } catch {}
+
+    doc.moveDown(0.6);
 
     // Sección imágenes (charts + mapa)
-    // NOTA: mantenemos un layout simple y robusto (sin depender de HTML render)
+    // -> OJO: si una imagen viene corrupta, NO tiramos el PDF; solo la omitimos.
     const putImage = (buf, title) => {
       if (!buf) return;
-      doc.fontSize(12).font("Helvetica-Bold").fillColor("#000").text(title);
-      doc.moveDown(0.3);
+      try {
+        doc.fontSize(12).font("Helvetica-Bold").fillColor("#000").text(title);
+        doc.moveDown(0.3);
 
-      // Ajuste a ancho página
-      const pageW = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-      doc.image(buf, { fit: [pageW, 240], align: "center" });
+        const pageW = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+        doc.image(buf, { fit: [pageW, 240], align: "center" });
 
-      doc.moveDown(0.8);
+        doc.moveDown(0.8);
+      } catch (err) {
+        console.warn("[PDF] no se pudo insertar imagen:", title, err?.message || err);
+        try {
+          doc.font("Helvetica-Oblique").fillColor("#555").text(`[Imagen no disponible: ${title}]`);
+          doc.fillColor("#000");
+          doc.moveDown(0.8);
+        } catch {}
+      }
     };
 
     putImage(dataUrlToBuffer(images.timeseriesChart), "Línea de tiempo de movimientos");
@@ -1496,10 +1588,18 @@ router.post("/runs/:runId/report/pdf", authRequired, async (req, res) => {
     putImage(dataUrlToBuffer(images.placesChart), "Lugares frecuentados (top)");
     putImage(dataUrlToBuffer(images.mapScreenshot), "Mapa (ArcGIS) - pantallazo");
 
-
     doc.end();
   } catch (e) {
-    res.status(500).json({ ok: false, error: String(e.message || e) });
+    console.error("[PDF] excepción:", e);
+
+    // Si aún NO se enviaron headers, podemos responder JSON.
+    if (!res.headersSent) {
+      return res.status(500).json({ ok: false, error: String(e.message || e) });
+    }
+
+    // Si ya está streameando PDF, NO mandar JSON (evita ERR_STREAM_WRITE_AFTER_END)
+    try { res.destroy(e); } catch {}
+    try { doc?.end(); } catch {}
   }
 });
 
